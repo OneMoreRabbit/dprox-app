@@ -33,7 +33,7 @@ against the real arc Qdrant + Ollama is passing on otter.
 
 | Tag | Notes |
 |---|---|
-| `v0.1.0` (2026-05-12) | First public image. Smoke surfaced [`qdrant-client` API drift](../integrations/archive/dprox-v0.1.0-qdrant-client-bug.md) — `AsyncQdrantClient.search()` removed in 1.18. |
+| `v0.1.0` (2026-05-12) | First public image. Smoke surfaced `qdrant-client` API drift (written up in the Atlas vault as `components/dprox/docs/provides/dprox-qdrant-client-bug-response-v0_1.md`) — `AsyncQdrantClient.search()` removed in 1.18. |
 | `v0.1.1` (2026-05-12) | Migrated to `query_points` (universal query API). Pin tightened to `qdrant-client>=1.13,<2.0`. Two regression-guard tests added. |
 
 ## Quick start (venv, Windows PowerShell)
