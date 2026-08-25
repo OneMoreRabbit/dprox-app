@@ -61,3 +61,7 @@ certs/
 # OS
 .DS_Store
 Thumbs.db
+# --- Atlas ---
+.atlas/
+.atlas-method/
+ATLAS-CONTEXT.md
