@@ -161,6 +161,12 @@ git push origin main --follow-tags
 there is never a window where `main` has moved and the tag has not.
 Release tags are `vMAJOR.MINOR.PATCH` (constitution §12) — no bare `X.Y.Z`.
 
+> **This flow is per the current runbook and changes with the
+> branch-protection pass**, which moves releases to a PR `dev → main`, then
+> tags the merge commit and pushes the tag separately. Re-issue this block
+> in the same pass. The tag *spelling* (§12) and the namespace *derivation*
+> (§11) are rulings and do not change with it.
+
 The `release.yml` workflow runs the test gate, verifies the tag matches
 `dprox.__version__`, builds the image with Buildx, and pushes both
 `ghcr.io/<org>/dprox:vX.Y.Z` and `ghcr.io/<org>/dprox:X.Y.Z`. The namespace
