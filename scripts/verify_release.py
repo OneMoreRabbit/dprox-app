@@ -15,7 +15,11 @@ import sys
 
 import httpx
 
-OWNER = "onemorerabbit"
+# Two distinct concepts that happen to share a value today. Kept separate on
+# purpose: if the image namespace ever diverges from the repo owner, conflating
+# them fails silently and this script reports a clean miss (constitution §11).
+GITHUB_OWNER = "OneMoreRabbit"   # source repo owner
+GHCR_NAMESPACE = "onemorerabbit"  # published image namespace (lowercase: GHCR)
 REPO = "dprox-app"
 PACKAGE = "dprox"
 
@@ -23,9 +27,9 @@ PACKAGE = "dprox"
 def main() -> int:
     tag = sys.argv[1] if len(sys.argv) > 1 else "v0.1.0"
 
-    print(f"=== 1. Recent GitHub Actions runs for {OWNER}/{REPO} ===")
+    print(f"=== 1. Recent GitHub Actions runs for {GITHUB_OWNER}/{REPO} ===")
     r = httpx.get(
-        f"https://api.github.com/repos/{OWNER}/{REPO}/actions/runs?per_page=5"
+        f"https://api.github.com/repos/{GITHUB_OWNER}/{REPO}/actions/runs?per_page=5"
     )
     for run in r.json().get("workflow_runs", [])[:5]:
         name = run["name"]
@@ -42,7 +46,7 @@ def main() -> int:
     print("=== 2. GHCR anonymous token (only granted if package is public) ===")
     r = httpx.get(
         "https://ghcr.io/token",
-        params={"service": "ghcr.io", "scope": f"repository:{OWNER}/{PACKAGE}:pull"},
+        params={"service": "ghcr.io", "scope": f"repository:{GHCR_NAMESPACE}/{PACKAGE}:pull"},
     )
     print(f"  status: {r.status_code}")
     if r.status_code != 200:
@@ -63,7 +67,7 @@ def main() -> int:
         ),
     }
     r = httpx.get(
-        f"https://ghcr.io/v2/{OWNER}/{PACKAGE}/manifests/{tag}", headers=headers
+        f"https://ghcr.io/v2/{GHCR_NAMESPACE}/{PACKAGE}/manifests/{tag}", headers=headers
     )
     print(f"  status: {r.status_code}")
     if r.status_code != 200:
@@ -86,9 +90,9 @@ def main() -> int:
             )
 
     print()
-    print(f"=== 4. List all tags on {OWNER}/{PACKAGE} ===")
+    print(f"=== 4. List all tags on {GHCR_NAMESPACE}/{PACKAGE} ===")
     r = httpx.get(
-        f"https://ghcr.io/v2/{OWNER}/{PACKAGE}/tags/list",
+        f"https://ghcr.io/v2/{GHCR_NAMESPACE}/{PACKAGE}/tags/list",
         headers={"Authorization": f"Bearer {token}"},
     )
     print(f"  status: {r.status_code}")
