@@ -147,4 +147,4 @@ def test_version_endpoint_returns_version_and_image(
 
 
 def test_image_uses_ghcr_jobcpf() -> None:
-    assert IMAGE.startswith("ghcr.io/jobcpf/dprox:")
+    assert IMAGE.startswith("ghcr.io/onemorerabbit/dprox:")

@@ -16,6 +16,13 @@ Earlier inputs and superseded specs are under `../integrations/archive/`.
 public). All twelve build steps are complete; end-to-end `/v1/query`
 against the real arc Qdrant + Ollama is passing on otter.
 
+> **Image namespace moved.** Estate ruling 2026-09-13: published images use the
+> organisation namespace `ghcr.io/onemorerabbit/`, never a personal account.
+> `v0.1.1` above is stated as deployed — it really is at `ghcr.io/jobcpf/` and
+> that is still the pullable image. Releases from `v0.1.2` on publish to
+> `ghcr.io/onemorerabbit/dprox`. Consumers re-point only after a tag there is
+> confirmed pullable.
+
 | Step | Coverage |
 |---|---|
 | 1. Skeleton | `dprox` CLI (`serve`, `health`, `version`), FastAPI app, `/healthz`, `/version` |
@@ -150,7 +157,7 @@ git push origin main --tags
 
 The `release.yml` workflow runs the test gate, verifies the tag matches
 `dprox.__version__`, builds the image with Buildx, and pushes both
-`ghcr.io/jobcpf/dprox:v0.1.0` and `ghcr.io/jobcpf/dprox:0.1.0`.
+`ghcr.io/onemorerabbit/dprox:v0.1.0` and `ghcr.io/onemorerabbit/dprox:0.1.0`.
 
 ## Cert mount permissions (production note)
 

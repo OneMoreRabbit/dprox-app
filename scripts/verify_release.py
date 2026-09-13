@@ -15,7 +15,7 @@ import sys
 
 import httpx
 
-OWNER = "jobcpf"
+OWNER = "onemorerabbit"
 REPO = "dprox-app"
 PACKAGE = "dprox"
 

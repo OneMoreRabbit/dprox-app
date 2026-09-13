@@ -60,14 +60,20 @@ jobs:
         id: version
         run: echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
+      # Derived, not hardcoded: one value, one home. Lowercased because GHCR
+      # rejects uppercase references and the org spells itself "OneMoreRabbit".
+      - name: Resolve image namespace
+        id: ns
+        run: echo "owner=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+
       - name: Build + push image
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
           tags: |
-            ghcr.io/jobcpf/dprox:${{ github.ref_name }}
-            ghcr.io/jobcpf/dprox:${{ steps.version.outputs.value }}
+            ghcr.io/${{ steps.ns.outputs.owner }}/dprox:${{ github.ref_name }}
+            ghcr.io/${{ steps.ns.outputs.owner }}/dprox:${{ steps.version.outputs.value }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           provenance: false
