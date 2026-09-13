@@ -145,19 +145,27 @@ deployments pin explicitly — never use `:latest`.
 To cut a release:
 
 ```bash
-# 1. Bump version in BOTH files (no automation in v0.1 — discipline).
-#    Match exactly; release CI gates on it.
+# 1. On dev: bump version in BOTH files (no automation — discipline).
+#    Match exactly; release CI gates on it. Drop any -dev suffix.
 $EDITOR src/dprox/version.py pyproject.toml
+git commit -am "release: X.Y.Z" && git push     # let CI go green first
 
-# 2. Commit, tag, push.
-git commit -am "release v0.1.0"
-git tag v0.1.0
-git push origin main --tags
+# 2. Merge to main, tag, and push them together.
+git checkout main && git pull
+git merge --no-ff dev -m "Release: merge dev -> main"
+git tag -a vX.Y.Z -m "Release vX.Y.Z"
+git push origin main --follow-tags
 ```
+
+`--no-ff` so the release is a commit you can point at; `--follow-tags` so
+there is never a window where `main` has moved and the tag has not.
+Release tags are `vMAJOR.MINOR.PATCH` (constitution §12) — no bare `X.Y.Z`.
 
 The `release.yml` workflow runs the test gate, verifies the tag matches
 `dprox.__version__`, builds the image with Buildx, and pushes both
-`ghcr.io/onemorerabbit/dprox:v0.1.0` and `ghcr.io/onemorerabbit/dprox:0.1.0`.
+`ghcr.io/<org>/dprox:vX.Y.Z` and `ghcr.io/<org>/dprox:X.Y.Z`. The namespace
+is derived from `github.repository_owner` (lowercased), not hardcoded —
+estate artefacts publish under the organisation (constitution §11).
 
 ## Cert mount permissions (production note)
 
