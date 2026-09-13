@@ -19,9 +19,45 @@ against the real arc Qdrant + Ollama is passing on otter.
 > **Image namespace moved.** Estate ruling 2026-09-13: published images use the
 > organisation namespace `ghcr.io/onemorerabbit/`, never a personal account.
 > `v0.1.1` above is stated as deployed — it really is at `ghcr.io/jobcpf/` and
-> that is still the pullable image. Releases from `v0.1.2` on publish to
-> `ghcr.io/onemorerabbit/dprox`. Consumers re-point only after a tag there is
-> confirmed pullable.
+> that is still the pullable image. `v0.1.2` is **source-only**: its build
+> predates this change and failed to push, so no image exists for that tag.
+> `v0.2.0` is the first release to publish to `ghcr.io/onemorerabbit/dprox`.
+> Consumers re-point only after a tag there is confirmed pullable **by pulling
+> it**.
+
+## Upgrading to 0.2.0 — BREAKING config change
+
+**Three settings were removed. A config that still sets any of them will not
+start.** Config parsing is strict (`extra="forbid"`), so the keys must be
+deleted from the deployed config **in the same act** as the upgrade, or dprox
+fails at boot:
+
+| Removed key | Was |
+|---|---|
+| `server.request_timeout_seconds` | parsed, never applied — no request envelope existed |
+| `server.max_request_body_bytes` | parsed, never enforced — **no body-size limit existed** |
+| `mtls.cn_to_agent_strategy` | parsed, never read; only one value was ever legal |
+
+All three were declared, validated and read by nothing. They are deleted rather
+than implemented because their values were never chosen by anyone — implementing
+`65536` would have turned an example comment into a real limit on the trust
+boundary (constitution §11).
+
+**The failure is loud and names the key**, e.g.:
+
+```
+config validation failed for /etc/dprox/config.yml:
+server.max_request_body_bytes
+  Extra inputs are not permitted [type=extra_forbidden, ...]
+```
+
+Delete the named key and restart. Nothing else changes: no behaviour depended on
+these settings, because nothing read them.
+
+> **`max_request_body_bytes` removed a cap that never existed** — dprox does not
+> bound request body size today, and did not before. A real limit is being
+> designed as its own change (size, rejection semantics, per-stage vs envelope).
+> Until then, bound bodies upstream if that matters to you.
 
 | Step | Coverage |
 |---|---|
