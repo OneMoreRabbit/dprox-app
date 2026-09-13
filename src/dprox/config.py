@@ -29,8 +29,6 @@ class _Strict(BaseModel):
 
 class ServerConfig(_Strict):
     bind: str = Field(min_length=3)
-    request_timeout_seconds: int = Field(gt=0, le=600)
-    max_request_body_bytes: int = Field(gt=0, le=10_000_000)
 
     @field_validator("bind")
     @classmethod
@@ -62,7 +60,6 @@ class MTLSConfig(_Strict):
     server_cert_path: Path
     server_key_path: Path
     client_cert_mode: Literal["optional", "required", "off"] = "optional"
-    cn_to_agent_strategy: Literal["cn_equals_name"] = "cn_equals_name"
     tls_min_version: Literal["TLSv1.2", "TLSv1.3"] = "TLSv1.3"
     tls_pin_enabled: bool = True
 

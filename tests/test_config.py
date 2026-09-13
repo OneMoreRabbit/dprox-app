@@ -154,3 +154,26 @@ def test_load_uses_env_path(monkeypatch, write_config, baseline_config_dict) -> 
     monkeypatch.setenv("DPROX_CONFIG", str(path))
     config = load_config()
     assert config.org == "test"
+
+
+# Removed in 0.1.3: three settings that were parsed, validated and read by
+# nothing (constitution §11 -- a phantom control advertises a capability the
+# tool does not have). config.py is extra="forbid", so a pre-0.1.3 config
+# still carrying them now fails at load. That is a BREAKING config change and
+# these cases pin it deliberately: the error must name the key, so an operator
+# hitting it at boot is told what to delete rather than left guessing.
+@pytest.mark.parametrize(
+    ("section", "key", "value"),
+    [
+        ("server", "request_timeout_seconds", 30),
+        ("server", "max_request_body_bytes", 65536),
+        ("mtls", "cn_to_agent_strategy", "cn_equals_name"),
+    ],
+)
+def test_removed_phantom_keys_are_rejected_by_name(
+    write_config, baseline_config_dict, section: str, key: str, value: object
+) -> None:
+    baseline_config_dict[section][key] = value
+    path = write_config(baseline_config_dict, name=f"legacy-{key}.yml")
+    with pytest.raises(ConfigError, match=key):
+        load_config(path)

@@ -60,8 +60,6 @@ def _baseline_config_dict(tmp_path: Path, plan_path: Path) -> dict:
         "org": "test",
         "server": {
             "bind": "127.0.0.1:8443",
-            "request_timeout_seconds": 30,
-            "max_request_body_bytes": 65536,
         },
         "mtls": {
             # Default to "off" so tests can exercise non-mTLS paths without
@@ -73,7 +71,6 @@ def _baseline_config_dict(tmp_path: Path, plan_path: Path) -> dict:
             "server_cert_path": str(tmp_path / "server.crt"),
             "server_key_path": str(tmp_path / "server.key"),
             "client_cert_mode": "off",
-            "cn_to_agent_strategy": "cn_equals_name",
             "tls_min_version": "TLSv1.3",
             "tls_pin_enabled": True,
         },
