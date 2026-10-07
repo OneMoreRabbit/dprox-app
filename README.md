@@ -29,8 +29,14 @@ against the real arc Qdrant + Ollama is passing on otter.
 
 **Three settings were removed. A config that still sets any of them will not
 start.** Config parsing is strict (`extra="forbid"`), so the keys must be
-deleted from the deployed config **in the same act** as the upgrade, or dprox
-fails at boot:
+deleted from the deployed config **before** the image is rolled to 0.2.0, or
+dprox fails at boot:
+
+> **Edit first, roll second — they are two acts, not one.** Config is
+> templated by one playbook and the image pinned in another, so they cannot be
+> one act. The order matters because it is asymmetric: deleting the keys is
+> harmless on 0.1.x (nothing read them), while rolling the image first is a
+> boot failure. (estate-manage, `dprox-config-migration-response-v0_1`.)
 
 | Removed key | Was |
 |---|---|
