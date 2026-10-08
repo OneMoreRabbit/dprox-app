@@ -80,10 +80,9 @@ these settings, because nothing read them.
 
 ### Release history
 
-| Tag | Notes |
-|---|---|
-| `v0.1.0` (2026-05-12) | First public image. Smoke surfaced `qdrant-client` API drift (written up in the Atlas vault as `components/dprox/docs/provides/dprox-qdrant-client-bug-response-v0_1.md`) — `AsyncQdrantClient.search()` removed in 1.18. |
-| `v0.1.1` (2026-05-12) | Migrated to `query_points` (universal query API). Pin tightened to `qdrant-client>=1.13,<2.0`. Two regression-guard tests added. |
+See [`CHANGELOG.md`](CHANGELOG.md) — one line per version, and the only home for
+it. Note `v0.1.2` is tagged but **source-only**: no image was published for it,
+and `v0.1.1` remains the consumable image.
 
 ## Quick start (venv, Windows PowerShell)
 
