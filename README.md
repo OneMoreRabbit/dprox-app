@@ -80,9 +80,10 @@ these settings, because nothing read them.
 
 ### Release history
 
-See [`CHANGELOG.md`](CHANGELOG.md) — one line per version, and the only home for
-it. Note `v0.1.2` is tagged but **source-only**: no image was published for it,
-and `v0.1.1` remains the consumable image.
+See [`release-notes.md`](release-notes.md) — the one home for release history,
+including versions built but not yet released. Note `v0.1.2` is tagged but
+**source-only**: no image was published for it, and `v0.1.1` remains the
+consumable image.
 
 ## Quick start (venv, Windows PowerShell)
 

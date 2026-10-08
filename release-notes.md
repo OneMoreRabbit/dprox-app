@@ -8,9 +8,32 @@ about: one short entry per release, newest first — what changed and what anyon
 
 # Release notes — dprox-app
 
-Newest first. One entry per release tag, written in the same commit that cuts the
-tag. Per-version detail, including versions built but not released, is in
-[`CHANGELOG.md`](CHANGELOG.md).
+Newest first, and the one home for release history (version numbering rule 0.2).
+Every built version gets a line under **Built, not yet released**; when it is
+tagged on `main` those lines become the tag's entry, with TL;DR and Action, in
+the tagging commit.
+
+## Built, not yet released
+
+- **0.2.0** — 2026-09-13 — **BREAKING config change.** Removed three settings
+  that were parsed, validated and read by nothing:
+  `server.request_timeout_seconds`, `server.max_request_body_bytes`,
+  `mtls.cn_to_agent_strategy`. Parsing is strict (`extra="forbid"`), so a config
+  still setting any of them fails at boot. Deleted rather than implemented
+  because nobody chose the values; a real body limit is proposed separately
+  (`architecture/proposals/dprox-body-cap-proposal-v0_1.md`). MINOR not PATCH:
+  an understated break is invisible in the one field consumers read to decide
+  whether upgrading is safe.
+- **0.2.0** — published images move to the organisation namespace
+  `ghcr.io/onemorerabbit/dprox`, derived from `github.repository_owner` rather
+  than hardcoded (constitution §11). This also fixes the `v0.1.2` push failure.
+- **0.2.0** — Atlas wiring refreshed through method 1.34.0.
+
+**Before this is rolled anywhere:** the deployed `dprox_arc` config on otter
+still sets all three removed keys, because `configure_dprox.yml` cannot run (an
+unrelated registry mount failure). Order is fix the mount, run that playbook,
+confirm the keys are gone, then bump the estate pin. The estate pins `v0.1.1`
+explicitly, so nothing rolls by accident.
 
 ## v0.1.2 — 2026-09-13
 
