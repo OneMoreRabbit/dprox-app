@@ -28,12 +28,36 @@ the tagging commit.
   `ghcr.io/onemorerabbit/dprox`, derived from `github.repository_owner` rather
   than hardcoded (constitution §11). This also fixes the `v0.1.2` push failure.
 - **0.2.0** — Atlas wiring refreshed through method 1.34.0.
+- **0.2.0** — 2026-11-13 — **request size limit, required in config.** New
+  `server.max_body_bytes`, **required with no default**: dprox refuses to
+  start if it is absent and names the key (constitution principle 11). A body
+  over the limit is refused with **HTTP 413 `request_too_large`** before
+  anything parses it, and audited as `request_rejected` with
+  `reason="body_too_large"`. Operator ruling 2026-11-13
+  (`agenteco-needs-dprox-request-size-limit-v0_1`), answering the body-cap
+  proposal.
 
-**Before this is rolled anywhere:** the deployed `dprox_arc` config on otter
-still sets all three removed keys, because `configure_dprox.yml` cannot run (an
-unrelated registry mount failure). Order is fix the mount, run that playbook,
-confirm the keys are gone, then bump the estate pin. The estate pins `v0.1.1`
-explicitly, so nothing rolls by accident.
+  **The key is new, not the old one.** v0.1.x had `server.max_request_body_bytes`,
+  which was required and **never enforced**; v0.2.0 removes it. Reusing that
+  name would have flipped the same config line from inert to enforcing with no
+  diff to notice, so a leftover `max_request_body_bytes` now **stops the start
+  and names itself**.
+
+  **Value 65536 bytes, chosen rather than inherited:** nomic-embed-text reads
+  at most 8192 tokens, about 32,000 characters, doubled for JSON escaping and
+  multi-byte text. The reasoning is beside the key in
+  `examples/config.example.yml`; changing it is one line of estate config.
+
+**Before this is rolled anywhere**, the deployed config must change. Under
+`server:` remove `request_timeout_seconds` and `max_request_body_bytes`, and
+**add `max_body_bytes: 65536`**; under `mtls:` remove `cn_to_agent_strategy`.
+One edit, and v0.2.0 will not start without the new key.
+
+Order: fix the registry mount (`configure_dprox.yml` currently cannot run —
+unrelated failure), run that playbook, confirm the deployed file matches the
+above, then bump the estate pin. The estate pins `v0.1.1` explicitly, so
+nothing rolls by accident. Tagging and rolling v0.2.0 is a separate step after
+the ARC restore.
 
 ## v0.1.2 — 2026-09-13
 

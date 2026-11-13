@@ -448,3 +448,68 @@ def test_version_remains_public_with_full_pipeline(
     with _client(baseline_config, plan_cache, mock_ollama, mock_qdrant) as c:
         response = c.get("/version")
     assert response.status_code == 200
+
+
+# --- request size limit (server.max_body_bytes) -------------------------------
+#
+# Ruled by the operator 2026-11-13 via agenteco-needs-dprox-request-size-limit.
+# The limit is enforced BEFORE parsing, so these assert on the raw body rather
+# than on a QueryRequest field.
+
+
+def _body_of(n: int) -> bytes:
+    """A syntactically valid request body of exactly n bytes."""
+    envelope = b'{"query":"' + b'"}'
+    pad = n - len(envelope)
+    assert pad > 0, "n too small to build a valid body"
+    return b'{"query":"' + (b"a" * pad) + b'"}'
+
+
+def test_body_one_byte_under_the_limit_is_accepted(
+    baseline_config, plan_cache, mock_ollama, mock_qdrant
+) -> None:
+    limit = baseline_config.server.max_body_bytes
+    body = _body_of(limit - 1)
+    assert len(body) == limit - 1
+
+    with _client(baseline_config, plan_cache, mock_ollama, mock_qdrant, cn="agent_alice") as c:
+        response = c.post(
+            "/v1/query", content=body, headers={"Content-Type": "application/json"}
+        )
+
+    assert response.status_code == 200
+
+
+def test_body_one_byte_over_the_limit_is_refused(
+    baseline_config, plan_cache, mock_ollama, mock_qdrant
+) -> None:
+    limit = baseline_config.server.max_body_bytes
+    body = _body_of(limit + 1)
+    assert len(body) == limit + 1
+
+    with _client(baseline_config, plan_cache, mock_ollama, mock_qdrant, cn="agent_alice") as c:
+        response = c.post(
+            "/v1/query", content=body, headers={"Content-Type": "application/json"}
+        )
+
+    assert response.status_code == 413
+    assert response.json()["error"] == "request_too_large"
+
+
+def test_oversize_body_is_refused_without_parsing(
+    baseline_config, plan_cache, mock_ollama, mock_qdrant
+) -> None:
+    """An oversize body that is not valid JSON still gets 413, not 400.
+
+    Proves the limit runs before parsing: if the body reached QueryRequest
+    first, malformed JSON would answer 400 bad_request instead.
+    """
+    body = b"x" * (baseline_config.server.max_body_bytes + 1)
+
+    with _client(baseline_config, plan_cache, mock_ollama, mock_qdrant, cn="agent_alice") as c:
+        response = c.post(
+            "/v1/query", content=body, headers={"Content-Type": "application/json"}
+        )
+
+    assert response.status_code == 413
+    assert response.json()["error"] == "request_too_large"

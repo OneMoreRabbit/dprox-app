@@ -34,6 +34,30 @@ class QueryRequest(BaseModel):
     limit: int | None = None
 
 
+def _body_too_large(request: Request, size: int, limit: int) -> JSONResponse:
+    """413 for an oversize body, audited as its own event.
+
+    Fires before identity is resolved, so there is no agent entry to name.
+    The CN and cert serial are recorded when the peer cert has already been
+    validated, matching ``auth_rejected``'s shape; both are null otherwise.
+    """
+    get_audit_logger().info(
+        "request_rejected",
+        reason="body_too_large",
+        body_bytes=size,
+        limit_bytes=limit,
+        cn=getattr(request.state, "cn", None),
+        cert_serial=getattr(request.state, "cert_serial", None),
+        remote_addr=_remote_addr(request),
+        path=request.url.path,
+    )
+    return _error_response(
+        413,
+        "request_too_large",
+        f"request body is {size} bytes; the limit is {limit}",
+    )
+
+
 def _error_response(status: int, code: str, message: str) -> JSONResponse:
     """Spec §4.3 error body shape: {"error": <code>, "message": <text>}."""
     return JSONResponse(status_code=status, content={"error": code, "message": message})
@@ -128,6 +152,37 @@ def create_app(
                 await qdrant.aclose()
 
     app = FastAPI(title="dprox", version=__version__, lifespan=lifespan)
+
+    @app.middleware("http")
+    async def _limit_body(request: Request, call_next):
+        """Refuse an oversize request body BEFORE anything parses it.
+
+        Runs as middleware, not a dependency, so the body is never handed to
+        JSON parsing or ``QueryRequest``: an oversize request costs a read and
+        a 413, not a parse. The limit is ``server.max_body_bytes``, which is
+        required in config — dprox does not start without it.
+
+        Both paths are checked. ``Content-Length`` is a fast reject when the
+        client declares the size, but it is a claim: it can be absent (chunked
+        transfer) or wrong. So the body is also measured as it is read, and the
+        declared length is never trusted on its own.
+        """
+        limit = request.app.state.config.server.max_body_bytes
+
+        declared = request.headers.get("content-length")
+        if declared is not None:
+            try:
+                if int(declared) > limit:
+                    return _body_too_large(request, int(declared), limit)
+            except ValueError:
+                pass  # unparseable header: fall through and measure the body
+
+        body = await request.body()
+        if len(body) > limit:
+            return _body_too_large(request, len(body), limit)
+
+        return await call_next(request)
+
     app.state.config = config
     app.state.plan_cache = plan_cache
     app.state.ollama = ollama

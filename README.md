@@ -44,6 +44,12 @@ dprox fails at boot:
 | `server.max_request_body_bytes` | parsed, never enforced — **no body-size limit existed** |
 | `mtls.cn_to_agent_strategy` | parsed, never read; only one value was ever legal |
 
+**One key is added, and it is required:** `server.max_body_bytes` (65536).
+dprox refuses to start without it. It is a *new* name on purpose — the old
+`max_request_body_bytes` was never enforced, so reusing it would have changed
+that line's behaviour with no diff to notice. A leftover old key stops the
+start and names itself.
+
 All three were declared, validated and read by nothing. They are deleted rather
 than implemented because their values were never chosen by anyone — implementing
 `65536` would have turned an example comment into a real limit on the trust
@@ -60,10 +66,10 @@ server.max_request_body_bytes
 Delete the named key and restart. Nothing else changes: no behaviour depended on
 these settings, because nothing read them.
 
-> **`max_request_body_bytes` removed a cap that never existed** — dprox does not
-> bound request body size today, and did not before. A real limit is being
-> designed as its own change (size, rejection semantics, per-stage vs envelope).
-> Until then, bound bodies upstream if that matters to you.
+> **`max_request_body_bytes` removed a cap that never existed** — dprox did not
+> bound request body size on `0.1.x`, despite that key. `0.2.0` adds a real one
+> as `server.max_body_bytes`, enforced before parsing and refused with
+> HTTP 413 `request_too_large`.
 
 | Step | Coverage |
 |---|---|

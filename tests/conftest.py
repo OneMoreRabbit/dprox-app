@@ -60,6 +60,7 @@ def _baseline_config_dict(tmp_path: Path, plan_path: Path) -> dict:
         "org": "test",
         "server": {
             "bind": "127.0.0.1:8443",
+            "max_body_bytes": 65536,
         },
         "mtls": {
             # Default to "off" so tests can exercise non-mTLS paths without

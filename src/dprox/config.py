@@ -29,6 +29,10 @@ class _Strict(BaseModel):
 
 class ServerConfig(_Strict):
     bind: str = Field(min_length=3)
+    # Required, no default (constitution principle 11): a size limit on the
+    # trust boundary is a value whose wrong answer is invisible, so dprox
+    # refuses to start rather than invent one. The estate declares it.
+    max_body_bytes: int = Field(gt=0, le=10_000_000)
 
     @field_validator("bind")
     @classmethod

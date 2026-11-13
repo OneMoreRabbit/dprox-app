@@ -177,3 +177,35 @@ def test_removed_phantom_keys_are_rejected_by_name(
     path = write_config(baseline_config_dict, name=f"legacy-{key}.yml")
     with pytest.raises(ConfigError, match=key):
         load_config(path)
+
+
+# --- server.max_body_bytes (required, no default) -----------------------------
+#
+# Constitution principle 11: a value whose wrong answer is invisible is
+# declared, and its absence is an error at startup. dprox invents no limit.
+
+
+def test_missing_max_body_bytes_stops_the_start_and_names_the_key(
+    write_config, baseline_config_dict
+) -> None:
+    del baseline_config_dict["server"]["max_body_bytes"]
+    path = write_config(baseline_config_dict, name="no-limit.yml")
+    with pytest.raises(ConfigError, match="max_body_bytes"):
+        load_config(path)
+
+
+def test_leftover_max_request_body_bytes_stops_the_start_and_names_it(
+    write_config, baseline_config_dict
+) -> None:
+    """The v0.1.x key must not be carried forward silently.
+
+    v0.1.x required `server.max_request_body_bytes` and never enforced it.
+    v0.2.0 renames the concept to `max_body_bytes` and enforces it. If an
+    operator upgrades without editing the config, the old key must stop the
+    start and name itself -- otherwise the same line would mean "inert" on
+    v0.1.x and "enforcing" on v0.2.0 with no diff to notice.
+    """
+    baseline_config_dict["server"]["max_request_body_bytes"] = 65536
+    path = write_config(baseline_config_dict, name="legacy-limit-key.yml")
+    with pytest.raises(ConfigError, match="max_request_body_bytes"):
+        load_config(path)
