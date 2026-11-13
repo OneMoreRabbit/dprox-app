@@ -230,6 +230,9 @@ def create_app(
             and qdrant_check["reachable"]
             and qdrant_check["collection_exists"]
             and qdrant_check["vector_dim_matches"]
+            # A collection with the wrong metric returns wrongly ranked
+            # passages and no error, so it is degraded, not ok.
+            and qdrant_check["distance_matches"]
         )
 
         body = {

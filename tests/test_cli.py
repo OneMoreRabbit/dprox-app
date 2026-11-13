@@ -63,6 +63,8 @@ def stub_qdrant_ok(monkeypatch):
             "collection_exists": True,
             "vector_dim": 768,
             "vector_dim_matches": True,
+            "distance": "cosine",
+            "distance_matches": True,
             "error": None,
         }
 
@@ -79,6 +81,8 @@ def stub_qdrant_unreachable(monkeypatch):
             "collection_exists": False,
             "vector_dim": None,
             "vector_dim_matches": False,
+            "distance": "cosine",
+            "distance_matches": True,
             "error": "connection refused",
         }
 
@@ -95,6 +99,8 @@ def stub_qdrant_collection_missing(monkeypatch):
             "collection_exists": False,
             "vector_dim": None,
             "vector_dim_matches": False,
+            "distance": "cosine",
+            "distance_matches": True,
             "error": "collection not found",
         }
 
@@ -111,6 +117,8 @@ def stub_qdrant_dim_mismatch(monkeypatch):
             "collection_exists": True,
             "vector_dim": 384,
             "vector_dim_matches": False,
+            "distance": "cosine",
+            "distance_matches": True,
             "error": None,
         }
 

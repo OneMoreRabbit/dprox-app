@@ -56,6 +56,13 @@ class QdrantHit:
     indexed_at: str | None = None
 
 
+REQUIRED_DISTANCE = "cosine"
+"""The metric ingstr's collection contract fixes, and the only one dprox may
+search with. A collection built with another is written happily by ingstr and
+searched wrongly by dprox, with no error anywhere — the contract says ingstr
+cannot check this, so dprox does."""
+
+
 def build_classification_filter(groups: frozenset[str]) -> Filter:
     """Build the RBAC filter for a Qdrant search.
 
@@ -243,12 +250,14 @@ class QdrantClient:
             )
 
         vector_dim = self._extract_vector_dim(info)
-        matches = vector_dim == self._expected_dim
+        distance = self._extract_distance(info)
         return self._status(
             reachable=True,
             collection_exists=True,
             vector_dim=vector_dim,
-            vector_dim_matches=matches,
+            vector_dim_matches=vector_dim == self._expected_dim,
+            distance=distance,
+            distance_matches=distance == REQUIRED_DISTANCE,
         )
 
     @staticmethod
@@ -267,6 +276,26 @@ class QdrantClient:
             return inner_size if isinstance(inner_size, int) else None
         return None
 
+    @staticmethod
+    def _extract_distance(info: Any) -> str | None:
+        """Pull the distance metric out of CollectionInfo, as a lowercase name.
+
+        Same shapes as the vector size: a plain config, or named vectors.
+        Qdrant reports an enum whose str() is like ``Distance.COSINE``; the
+        trailing name is what is compared.
+        """
+        try:
+            vectors = info.config.params.vectors
+        except AttributeError:
+            return None
+        distance = getattr(vectors, "distance", None)
+        if distance is None and isinstance(vectors, dict) and vectors:
+            distance = getattr(next(iter(vectors.values())), "distance", None)
+        if distance is None:
+            return None
+        name = getattr(distance, "name", None) or str(distance).rsplit(".", 1)[-1]
+        return str(name).lower()
+
     def _status(
         self,
         *,
@@ -274,6 +303,8 @@ class QdrantClient:
         collection_exists: bool = False,
         vector_dim: int | None = None,
         vector_dim_matches: bool = False,
+        distance: str | None = None,
+        distance_matches: bool = False,
         error: str | None = None,
     ) -> dict[str, Any]:
         return {
@@ -283,5 +314,7 @@ class QdrantClient:
             "collection_exists": collection_exists,
             "vector_dim": vector_dim,
             "vector_dim_matches": vector_dim_matches,
+            "distance": distance,
+            "distance_matches": distance_matches,
             "error": error,
         }

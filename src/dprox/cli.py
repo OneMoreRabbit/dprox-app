@@ -11,7 +11,7 @@ from dprox.config import Config, ConfigError, MTLSConfig, load_config, resolve_c
 from dprox.mtls import DproxHttpProtocol
 from dprox.ollama import OllamaClient
 from dprox.plan import PlanCache, PlanError
-from dprox.qdrant import QdrantClient
+from dprox.qdrant import REQUIRED_DISTANCE, QdrantClient
 from dprox.version import __version__
 
 _CERT_REQS = {
@@ -155,8 +155,19 @@ def _format_qdrant_lines(status: dict[str, Any]) -> tuple[list[str], bool]:
         )
         return lines, False
 
+    if not status["distance_matches"]:
+        got = status.get("distance")
+        lines.append(
+            f"[FAIL] qdrant.collection         {collection} "
+            f"(distance is {got}, must be {REQUIRED_DISTANCE})"
+        )
+        return lines, False
+
     dim = status["vector_dim"]
-    lines.append(f"[OK]   qdrant.collection         {collection} (dim={dim})")
+    lines.append(
+        f"[OK]   qdrant.collection         {collection} "
+        f"(dim={dim}, distance={status['distance']})"
+    )
     return lines, True
 
 

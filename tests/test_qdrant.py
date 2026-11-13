@@ -413,3 +413,66 @@ async def test_aclose_tolerates_backend_without_close_method() -> None:
     backend = SimpleNamespace()  # no close() attribute
     client = _client(backend)
     await client.aclose()  # should not raise
+
+
+# --- the collection's distance metric -----------------------------------------
+#
+# ingstr's qdrant-collection-contract fixes cosine and says plainly that ingstr
+# CANNOT check it: "a collection built with the wrong distance is written
+# happily and searched wrongly with no error anywhere". dprox reads the
+# collection info already, so dprox checks it.
+
+
+def _info(dim: int, distance: str | None):
+    """CollectionInfo-shaped double; distance=None models an older Qdrant."""
+    vectors = SimpleNamespace(size=dim)
+    if distance is not None:
+        vectors.distance = SimpleNamespace(name=distance)
+    return SimpleNamespace(config=SimpleNamespace(params=SimpleNamespace(vectors=vectors)))
+
+
+@pytest.mark.asyncio
+async def test_health_reports_cosine_as_matching(baseline_config, mock_qdrant_backend) -> None:
+    dim = baseline_config.embedding.vector_dim
+    mock_qdrant_backend.get_collection.return_value = _info(dim, "Cosine")
+    client = QdrantClient(baseline_config.qdrant, dim, backend=mock_qdrant_backend)
+
+    status = await client.check_health()
+
+    assert status["distance"] == "cosine"
+    assert status["distance_matches"] is True
+
+
+@pytest.mark.asyncio
+async def test_health_reports_a_wrong_distance_as_not_matching(
+    baseline_config, mock_qdrant_backend
+) -> None:
+    """The case the contract says nobody catches: right size, wrong metric.
+
+    The collection is readable, the vector size is correct and every query
+    succeeds — it simply ranks wrongly. Only this check sees it.
+    """
+    dim = baseline_config.embedding.vector_dim
+    mock_qdrant_backend.get_collection.return_value = _info(dim, "Dot")
+    client = QdrantClient(baseline_config.qdrant, dim, backend=mock_qdrant_backend)
+
+    status = await client.check_health()
+
+    assert status["vector_dim_matches"] is True, "size is right; only the metric is wrong"
+    assert status["distance"] == "dot"
+    assert status["distance_matches"] is False
+
+
+@pytest.mark.asyncio
+async def test_health_treats_an_unreadable_distance_as_not_matching(
+    baseline_config, mock_qdrant_backend
+) -> None:
+    """If the metric cannot be read, dprox does not assume it is cosine."""
+    dim = baseline_config.embedding.vector_dim
+    mock_qdrant_backend.get_collection.return_value = _info(dim, None)
+    client = QdrantClient(baseline_config.qdrant, dim, backend=mock_qdrant_backend)
+
+    status = await client.check_health()
+
+    assert status["distance"] is None
+    assert status["distance_matches"] is False

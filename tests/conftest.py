@@ -199,7 +199,13 @@ def mock_qdrant_backend(baseline_config: Config):
     backend.get_collection.return_value = SimpleNamespace(
         config=SimpleNamespace(
             params=SimpleNamespace(
-                vectors=SimpleNamespace(size=baseline_config.embedding.vector_dim)
+                vectors=SimpleNamespace(
+                    size=baseline_config.embedding.vector_dim,
+                    # The contract fixes cosine; a fake that omits it would
+                    # make every collection look metric-less and the check
+                    # would never be exercised.
+                    distance=SimpleNamespace(name="Cosine"),
+                )
             )
         )
     )
