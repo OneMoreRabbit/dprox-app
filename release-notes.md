@@ -13,51 +13,51 @@ Every built version gets a line under **Built, not yet released**; when it is
 tagged on `main` those lines become the tag's entry, with TL;DR and Action, in
 the tagging commit.
 
-## Built, not yet released
+## v0.2.0 — 2026-11-13
 
-- **0.2.0** — 2026-09-13 — **BREAKING config change.** Removed three settings
-  that were parsed, validated and read by nothing:
+**TL;DR:** a real request size limit, images in the organisation namespace, and
+three dead configuration keys removed. **Breaking for deployment:** the config
+must be edited before the image is rolled.
+
+- **New `server.max_body_bytes`, required, no default.** dprox refuses to start
+  if it is absent and names the key (constitution principle 11). A body over
+  the limit is refused with **HTTP 413 `request_too_large`** before anything
+  parses it, and audited as `request_rejected` with `reason="body_too_large"`.
+  Operator ruling 2026-11-13.
+- **Three keys removed**, all parsed and read by nothing on `0.1.x`:
   `server.request_timeout_seconds`, `server.max_request_body_bytes`,
-  `mtls.cn_to_agent_strategy`. Parsing is strict (`extra="forbid"`), so a config
-  still setting any of them fails at boot. Deleted rather than implemented
-  because nobody chose the values; a real body limit is proposed separately
-  (`architecture/proposals/dprox-body-cap-proposal-v0_1.md`). MINOR not PATCH:
-  an understated break is invisible in the one field consumers read to decide
-  whether upgrading is safe.
-- **0.2.0** — published images move to the organisation namespace
-  `ghcr.io/onemorerabbit/dprox`, derived from `github.repository_owner` rather
-  than hardcoded (constitution §11). This also fixes the `v0.1.2` push failure.
-- **0.2.0** — Atlas wiring refreshed through method 1.34.0.
-- **0.2.0** — 2026-11-13 — **request size limit, required in config.** New
-  `server.max_body_bytes`, **required with no default**: dprox refuses to
-  start if it is absent and names the key (constitution principle 11). A body
-  over the limit is refused with **HTTP 413 `request_too_large`** before
-  anything parses it, and audited as `request_rejected` with
-  `reason="body_too_large"`. Operator ruling 2026-11-13
-  (`agenteco-needs-dprox-request-size-limit-v0_1`), answering the body-cap
-  proposal.
+  `mtls.cn_to_agent_strategy`. Parsing is strict, so a config still setting any
+  of them fails at boot and names it.
+- **`max_body_bytes` is a new name, not the old one reused.** The old key was
+  required and never enforced; reusing it would have flipped that config line
+  from inert to enforcing with no diff to notice. A leftover
+  `max_request_body_bytes` now stops the start and names itself.
+- **Images publish to `ghcr.io/onemorerabbit/dprox`**, derived from
+  `github.repository_owner` rather than hardcoded (constitution §11). This is
+  what `v0.1.2` failed to do, which is why that tag has no image.
+- Atlas wiring refreshed through method 1.35.0.
 
-  **The key is new, not the old one.** v0.1.x had `server.max_request_body_bytes`,
-  which was required and **never enforced**; v0.2.0 removes it. Reusing that
-  name would have flipped the same config line from inert to enforcing with no
-  diff to notice, so a leftover `max_request_body_bytes` now **stops the start
-  and names itself**.
+**Action — edit the config before rolling the image; they are two acts.**
 
-  **Value 65536 bytes, chosen rather than inherited:** nomic-embed-text reads
-  at most 8192 tokens, about 32,000 characters, doubled for JSON escaping and
-  multi-byte text. The reasoning is beside the key in
-  `examples/config.example.yml`; changing it is one line of estate config.
+```diff
+ server:
+-  request_timeout_seconds: 30
+-  max_request_body_bytes: 65536
++  max_body_bytes: 65536
+ mtls:
+-  cn_to_agent_strategy: cn_equals_name
+```
 
-**Before this is rolled anywhere**, the deployed config must change. Under
-`server:` remove `request_timeout_seconds` and `max_request_body_bytes`, and
-**add `max_body_bytes: 65536`**; under `mtls:` remove `cn_to_agent_strategy`.
-One edit, and v0.2.0 will not start without the new key.
+Editing is harmless on `0.1.x` because nothing read those keys; rolling the
+image first is a boot failure. Order: fix the registry mount, run
+`configure_dprox.yml`, confirm the deployed file matches the above, then bump
+the estate pin. The estate pins `v0.1.1` explicitly, so nothing rolls by
+accident.
 
-Order: fix the registry mount (`configure_dprox.yml` currently cannot run —
-unrelated failure), run that playbook, confirm the deployed file matches the
-above, then bump the estate pin. The estate pins `v0.1.1` explicitly, so
-nothing rolls by accident. Tagging and rolling v0.2.0 is a separate step after
-the ARC restore.
+**The value 65536 is chosen, not inherited:** nomic-embed-text reads at most
+8192 tokens, about 32,000 characters, doubled for JSON escaping and multi-byte
+text. It should be revisited if the embedding model changes. The reasoning sits
+beside the key in `examples/config.example.yml`.
 
 ## v0.1.2 — 2026-09-13
 
