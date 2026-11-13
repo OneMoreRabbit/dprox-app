@@ -34,6 +34,11 @@ class AgentEntry:
     role: Role
     groups: frozenset[str]
     description: str | None = None
+    orgs: frozenset[str] = frozenset()
+    """The orgs this caller's groups belong to, read from the plan's
+    ``groups[]`` section — never parsed out of a group name
+    (constitution principle 10). Selects which collections may be
+    searched; the group filter then applies inside each."""
 
 
 class _Entry(BaseModel):
@@ -45,6 +50,18 @@ class _Entry(BaseModel):
     description: str | None = None
 
 
+class _GroupEntry(BaseModel):
+    """One row of the plan's ``groups[]`` section (contract 0.11).
+
+    Only ``name`` and ``org`` are read. ``grade``, ``vertical`` and
+    ``scope`` are part of the tuple and tolerated, not used.
+    """
+
+    model_config = ConfigDict(extra="allow", str_strip_whitespace=True)
+    name: str = Field(min_length=1)
+    org: str = Field(min_length=1)
+
+
 class _PlanModel(BaseModel):
     """Loose Pydantic model for the compiled plan's top level.
 
@@ -54,6 +71,7 @@ class _PlanModel(BaseModel):
     """
 
     model_config = ConfigDict(extra="allow")
+    groups: list[_GroupEntry] = Field(default_factory=list)
     agent_users: list[_Entry] = Field(default_factory=list)
     admin_users: list[_Entry] = Field(default_factory=list)
 
@@ -69,16 +87,56 @@ def parse_plan_dict(data: dict) -> dict[str, AgentEntry]:
     except ValidationError as exc:
         raise PlanError(f"plan validation failed:\n{exc}") from exc
 
+    # A plan with no callers is the more fundamental fault, so it is reported
+    # first: on an empty plan "no groups[]" is true but unhelpful.
+    if not plan.agent_users and not plan.admin_users:
+        raise PlanError("plan has no agent_users or admin_users entries")
+
+    # groups[] is the ONLY source of a group's org (contract 0.11,
+    # constitution principle 10). dprox never parses "arc_g2_..." to learn
+    # an org: a naming convention is not an access-control decision.
+    if not plan.groups:
+        raise PlanError(
+            "plan has no groups[] section — dprox needs compiled-rbac-plan 0.11 "
+            "or later, which states each group's org"
+        )
+    group_org: dict[str, str] = {}
+    for g in plan.groups:
+        if g.name in group_org and group_org[g.name] != g.org:
+            raise PlanError(
+                f"groups[] gives {g.name!r} two orgs: "
+                f"{group_org[g.name]!r} and {g.org!r}"
+            )
+        group_org[g.name] = g.org
+
+    def orgs_for(name: str, groups: frozenset[str]) -> frozenset[str]:
+        """Resolve a caller's orgs, refusing to guess.
+
+        A group a caller holds that groups[] does not list is a defect in
+        the plan, not something to work around: dprox would have no way to
+        know which collection it belongs to, and the safe-looking choices
+        (skip it, or guess from its name) are both wrong. Refuse the plan.
+        """
+        missing = sorted(g for g in groups if g not in group_org)
+        if missing:
+            raise PlanError(
+                f"{name!r} holds group(s) absent from groups[]: "
+                f"{', '.join(missing)} — the plan is inconsistent"
+            )
+        return frozenset(group_org[g] for g in groups)
+
     out: dict[str, AgentEntry] = {}
 
     for entry in plan.agent_users:
         if entry.name in out:
             raise PlanError(f"duplicate name in agent_users: {entry.name!r}")
+        groups = frozenset(entry.groups)
         out[entry.name] = AgentEntry(
             name=entry.name,
             role="agent",
-            groups=frozenset(entry.groups),
+            groups=groups,
             description=entry.description,
+            orgs=orgs_for(entry.name, groups),
         )
 
     for entry in plan.admin_users:
@@ -86,11 +144,13 @@ def parse_plan_dict(data: dict) -> dict[str, AgentEntry]:
             raise PlanError(
                 f"name {entry.name!r} appears in both agent_users and admin_users"
             )
+        groups = frozenset(entry.groups)
         out[entry.name] = AgentEntry(
             name=entry.name,
             role="admin",
-            groups=frozenset(entry.groups),
+            groups=groups,
             description=entry.description,
+            orgs=orgs_for(entry.name, groups),
         )
 
     if not out:

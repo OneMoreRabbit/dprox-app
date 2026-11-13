@@ -23,11 +23,28 @@ def plan_yaml(tmp_path: Path) -> Path:
             """
             meta:
               compiled_at: '2026-01-01T00:00:00Z'
-              compiler_version: 0.3.0
+              compiler_version: 0.7.3
+              schema_version: '0.11'
             required_groups:
             - g_engineering
             - g_finance
             - g_admin
+            groups:
+            - name: g_engineering
+              org: testorg
+              grade: g1
+              vertical: engineering
+              scope: all
+            - name: g_finance
+              org: testorg
+              grade: g2
+              vertical: finance
+              scope: all
+            - name: g_admin
+              org: testorg
+              grade: g3
+              vertical: admin
+              scope: all
             agent_users:
             - name: agent_alice
               description: Engineering test agent

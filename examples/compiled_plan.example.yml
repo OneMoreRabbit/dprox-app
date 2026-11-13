@@ -5,13 +5,35 @@
 
 meta:
   compiled_at: '2026-01-01T00:00:00Z'
-  compiler_version: 0.3.0
+  compiler_version: 0.7.3
+  schema_version: '0.11'
 
 # Informational; dprox doesn't validate against this set in v0.1.
 required_groups:
 - example_g0_engineering
 - example_g1_finance
 - example_g2_admin
+
+# groups[] states each group's org (compiled-rbac-plan 0.11). dprox reads the
+# org from here and NEVER parses it out of a group's name: a naming convention
+# is not an access-control decision (constitution principle 10). A plan without
+# this section is refused.
+groups:
+- name: example_g0_engineering
+  org: example
+  grade: g0
+  vertical: engineering
+  scope: all
+- name: example_g1_finance
+  org: example
+  grade: g1
+  vertical: finance
+  scope: all
+- name: example_g2_admin
+  org: example
+  grade: g2
+  vertical: admin
+  scope: all
 
 agent_users:
 - name: agent_alice
