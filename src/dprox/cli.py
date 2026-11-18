@@ -126,49 +126,53 @@ def _format_ollama_line(status: dict[str, Any]) -> tuple[str, bool]:
 
 
 def _format_qdrant_lines(status: dict[str, Any]) -> tuple[list[str], bool]:
-    """Format the qdrant.connect + qdrant.collection [OK]/[FAIL] lines.
+    """Format the qdrant.connect line and one line for each org's collection.
 
-    Returns (lines, all_ok). Mirrors spec §5.2 sample output.
+    Returns (lines, all_ok). Every collection gets a line whether it passes or
+    fails: with one dprox for several orgs, stopping at the first fault would
+    hide the second, and the operator fixing one would then meet the other.
     """
     url = status["url"]
-    collection = status["collection"]
     lines: list[str] = []
 
     if not status["reachable"]:
         reason = status.get("error") or "unreachable"
         lines.append(f"[FAIL] qdrant.connect            {url} ({reason})")
-        return lines, False
 
-    lines.append(f"[OK]   qdrant.connect            {url}")
+    else:
+        lines.append(f"[OK]   qdrant.connect            {url}")
 
-    if not status["collection_exists"]:
-        lines.append(
-            f"[FAIL] qdrant.collection         {collection} (not found)"
-        )
-        return lines, False
+    all_ok = status["reachable"]
+    for org in status["orgs"]:
+        one = status["collections"][org]
+        label = f"qdrant.{org}"
+        collection = one["collection"]
+        if not one["reachable"]:
+            reason = one.get("error") or "unreachable"
+            lines.append(f"[FAIL] {label:<25} {collection} ({reason})")
+        elif not one["collection_exists"]:
+            lines.append(f"[FAIL] {label:<25} {collection} (not found)")
+        elif not one["vector_dim_matches"]:
+            dim = one.get("vector_dim")
+            lines.append(
+                f"[FAIL] {label:<25} {collection} "
+                f"(vector dim mismatch: got {dim})"
+            )
+        elif not one["distance_matches"]:
+            got = one.get("distance")
+            lines.append(
+                f"[FAIL] {label:<25} {collection} "
+                f"(distance is {got}, must be {REQUIRED_DISTANCE})"
+            )
+        else:
+            lines.append(
+                f"[OK]   {label:<25} {collection} "
+                f"(dim={one['vector_dim']}, distance={one['distance']})"
+            )
+            continue
+        all_ok = False
 
-    if not status["vector_dim_matches"]:
-        dim = status.get("vector_dim")
-        lines.append(
-            f"[FAIL] qdrant.collection         {collection} "
-            f"(vector dim mismatch: got {dim})"
-        )
-        return lines, False
-
-    if not status["distance_matches"]:
-        got = status.get("distance")
-        lines.append(
-            f"[FAIL] qdrant.collection         {collection} "
-            f"(distance is {got}, must be {REQUIRED_DISTANCE})"
-        )
-        return lines, False
-
-    dim = status["vector_dim"]
-    lines.append(
-        f"[OK]   qdrant.collection         {collection} "
-        f"(dim={dim}, distance={status['distance']})"
-    )
-    return lines, True
+    return lines, all_ok
 
 
 @click.group(help="dprox — RBAC-enforcing query proxy.")
@@ -211,7 +215,8 @@ def serve(config_path: str | None) -> None:
 def health(config_path: str | None) -> None:
     resolved = resolve_config_path(config_path)
     config = _load_or_exit(config_path, exit_code=2)
-    click.echo(f"[OK]   config                   {resolved} (org={config.org})")
+    orgs = ", ".join(sorted(config.qdrant.collections))
+    click.echo(f"[OK]   config                   {resolved} (orgs={orgs})")
 
     plan_cache = _build_plan_cache_or_exit(config, exit_code=2)
     agents, admins = plan_cache.counts()

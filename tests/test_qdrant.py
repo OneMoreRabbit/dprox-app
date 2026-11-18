@@ -20,12 +20,20 @@ from dprox.qdrant import (
     build_classification_filter,
 )
 
+ORGS = frozenset({"testorg"})
+"""The orgs the baseline test config has a collection for."""
+
+
+def _one(status: dict, org: str = "testorg") -> dict:
+    """One org's entry in a check_health result."""
+    return status["collections"][org]
+
 
 def _config(**overrides) -> QdrantConfig:
     base: dict = {
         "url": "http://test-qdrant:6333",
         "api_key_env": "TEST_QDRANT_API_KEY",
-        "collection": "documents",
+        "collections": {"testorg": "documents"},
         "default_limit": 10,
         "max_limit": 50,
         "timeout_seconds": 5,
@@ -112,7 +120,7 @@ async def test_search_passes_built_filter_to_backend() -> None:
     backend.query_points.return_value = _response([])
     client = _client(backend)
 
-    await client.search([0.1] * 4, frozenset({"g1", "g2"}), limit=5)
+    await client.search([0.1] * 4, frozenset({"g1", "g2"}), ORGS, limit=5)
 
     backend.query_points.assert_awaited_once()
     kwargs = backend.query_points.await_args.kwargs
@@ -136,7 +144,7 @@ async def test_search_does_not_call_legacy_search_method() -> None:
     backend.query_points.return_value = _response([])
     client = _client(backend)
 
-    await client.search([0.1] * 4, frozenset({"g"}), limit=5)
+    await client.search([0.1] * 4, frozenset({"g"}), ORGS, limit=5)
 
     backend.query_points.assert_awaited_once()
     backend.search.assert_not_called()
@@ -164,7 +172,9 @@ async def test_search_projects_payload_to_qdrant_hit() -> None:
     )
     client = _client(backend)
 
-    hits, elapsed_ms = await client.search([0.1] * 4, frozenset({"arc_g0"}), limit=10)
+    hits, elapsed_ms, collections = await client.search(
+        [0.1] * 4, frozenset({"arc_g0"}), ORGS, limit=10
+    )
 
     assert len(hits) == 1
     h = hits[0]
@@ -185,7 +195,7 @@ async def test_search_handles_minimal_payload() -> None:
     )
     client = _client(backend)
 
-    hits, _ = await client.search([0.1] * 4, frozenset({"g_min"}), limit=10)
+    hits, _, _ = await client.search([0.1] * 4, frozenset({"g_min"}), ORGS, limit=10)
 
     assert hits[0].source_path_rel is None
     assert hits[0].file_type is None
@@ -200,7 +210,7 @@ async def test_search_rejects_point_missing_text() -> None:
     client = _client(backend)
 
     with pytest.raises(QdrantUnavailable, match="missing 'text'"):
-        await client.search([0.1] * 4, frozenset({"g_eng"}), limit=10)
+        await client.search([0.1] * 4, frozenset({"g_eng"}), ORGS, limit=10)
 
 
 async def test_search_rejects_point_missing_classification_group() -> None:
@@ -211,7 +221,7 @@ async def test_search_rejects_point_missing_classification_group() -> None:
     client = _client(backend)
 
     with pytest.raises(QdrantUnavailable, match="missing 'classification_group'"):
-        await client.search([0.1] * 4, frozenset({"g"}), limit=10)
+        await client.search([0.1] * 4, frozenset({"g"}), ORGS, limit=10)
 
 
 async def test_search_rejects_point_with_empty_text() -> None:
@@ -222,7 +232,7 @@ async def test_search_rejects_point_with_empty_text() -> None:
     client = _client(backend)
 
     with pytest.raises(QdrantUnavailable, match="missing 'text'"):
-        await client.search([0.1] * 4, frozenset({"g"}), limit=10)
+        await client.search([0.1] * 4, frozenset({"g"}), ORGS, limit=10)
 
 
 async def test_search_rejects_response_without_points_attribute() -> None:
@@ -233,7 +243,7 @@ async def test_search_rejects_response_without_points_attribute() -> None:
     client = _client(backend)
 
     with pytest.raises(QdrantUnavailable, match="missing 'points'"):
-        await client.search([0.1] * 4, frozenset({"g"}), limit=10)
+        await client.search([0.1] * 4, frozenset({"g"}), ORGS, limit=10)
 
 
 async def test_search_timeout_raises_qdrant_timeout() -> None:
@@ -242,7 +252,7 @@ async def test_search_timeout_raises_qdrant_timeout() -> None:
     client = _client(backend)
 
     with pytest.raises(QdrantTimeout, match="timed out"):
-        await client.search([0.1] * 4, frozenset({"g"}), limit=10)
+        await client.search([0.1] * 4, frozenset({"g"}), ORGS, limit=10)
 
 
 async def test_search_unexpected_response_raises_unavailable() -> None:
@@ -253,7 +263,7 @@ async def test_search_unexpected_response_raises_unavailable() -> None:
     client = _client(backend)
 
     with pytest.raises(QdrantUnavailable, match="status 503"):
-        await client.search([0.1] * 4, frozenset({"g"}), limit=10)
+        await client.search([0.1] * 4, frozenset({"g"}), ORGS, limit=10)
 
 
 async def test_search_response_handling_error_raises_unavailable() -> None:
@@ -262,7 +272,7 @@ async def test_search_response_handling_error_raises_unavailable() -> None:
     client = _client(backend)
 
     with pytest.raises(QdrantUnavailable, match="response error"):
-        await client.search([0.1] * 4, frozenset({"g"}), limit=10)
+        await client.search([0.1] * 4, frozenset({"g"}), ORGS, limit=10)
 
 
 async def test_search_unknown_exception_wrapped_as_unavailable() -> None:
@@ -271,7 +281,7 @@ async def test_search_unknown_exception_wrapped_as_unavailable() -> None:
     client = _client(backend)
 
     with pytest.raises(QdrantUnavailable, match="ConnectionError"):
-        await client.search([0.1] * 4, frozenset({"g"}), limit=10)
+        await client.search([0.1] * 4, frozenset({"g"}), ORGS, limit=10)
 
 
 async def test_search_empty_results_returns_empty_list() -> None:
@@ -279,7 +289,7 @@ async def test_search_empty_results_returns_empty_list() -> None:
     backend.query_points.return_value = _response([])
     client = _client(backend)
 
-    hits, _ = await client.search([0.1] * 4, frozenset({"g"}), limit=10)
+    hits, _, _ = await client.search([0.1] * 4, frozenset({"g"}), ORGS, limit=10)
     assert hits == []
 
 
@@ -294,9 +304,9 @@ async def test_check_health_collection_exists_with_matching_dim() -> None:
     status = await client.check_health()
 
     assert status["reachable"] is True
-    assert status["collection_exists"] is True
-    assert status["vector_dim"] == 4
-    assert status["vector_dim_matches"] is True
+    assert _one(status)["collection_exists"] is True
+    assert _one(status)["vector_dim"] == 4
+    assert _one(status)["vector_dim_matches"] is True
     assert status["error"] is None
 
 
@@ -307,9 +317,9 @@ async def test_check_health_dim_mismatch_marks_failed() -> None:
 
     status = await client.check_health()
 
-    assert status["collection_exists"] is True
-    assert status["vector_dim"] == 768
-    assert status["vector_dim_matches"] is False
+    assert _one(status)["collection_exists"] is True
+    assert _one(status)["vector_dim"] == 768
+    assert _one(status)["vector_dim_matches"] is False
 
 
 async def test_check_health_collection_not_found() -> None:
@@ -322,7 +332,7 @@ async def test_check_health_collection_not_found() -> None:
     status = await client.check_health()
 
     assert status["reachable"] is True
-    assert status["collection_exists"] is False
+    assert _one(status)["collection_exists"] is False
     assert "not found" in (status["error"] or "")
 
 
@@ -345,7 +355,7 @@ async def test_check_health_timeout() -> None:
 
     status = await client.check_health()
     assert status["reachable"] is False
-    assert status["error"] == "timeout"
+    assert _one(status)["error"] == "timeout"
 
 
 async def test_check_health_connection_error() -> None:
@@ -373,8 +383,8 @@ async def test_check_health_handles_named_vectors_config() -> None:
     client = _client(backend, dim=4)
 
     status = await client.check_health()
-    assert status["vector_dim"] == 4
-    assert status["vector_dim_matches"] is True
+    assert _one(status)["vector_dim"] == 4
+    assert _one(status)["vector_dim_matches"] is True
 
 
 # --- API key resolution ------------------------------------------------------
@@ -389,13 +399,13 @@ def test_api_key_resolved_from_env(monkeypatch) -> None:
     client = QdrantClient(_config(), expected_vector_dim=4)
     # Smoke — the real backend is built lazily
     assert client.url == "http://test-qdrant:6333"
-    assert client.collection == "documents"
+    assert client.collections == {"testorg": "documents"}
 
 
 def test_missing_api_key_env_does_not_raise() -> None:
     """Missing env var → API key is None; Qdrant rejects later if it requires auth."""
     client = QdrantClient(_config(api_key_env="DEFINITELY_NOT_SET_XYZ"), expected_vector_dim=4)
-    assert client.collection == "documents"
+    assert client.collections == {"testorg": "documents"}
 
 
 # --- aclose -------------------------------------------------------------------
@@ -439,8 +449,8 @@ async def test_health_reports_cosine_as_matching(baseline_config, mock_qdrant_ba
 
     status = await client.check_health()
 
-    assert status["distance"] == "cosine"
-    assert status["distance_matches"] is True
+    assert _one(status)["distance"] == "cosine"
+    assert _one(status)["distance_matches"] is True
 
 
 @pytest.mark.asyncio
@@ -458,9 +468,9 @@ async def test_health_reports_a_wrong_distance_as_not_matching(
 
     status = await client.check_health()
 
-    assert status["vector_dim_matches"] is True, "size is right; only the metric is wrong"
-    assert status["distance"] == "dot"
-    assert status["distance_matches"] is False
+    assert _one(status)["vector_dim_matches"] is True, "size is right; only the metric is wrong"
+    assert _one(status)["distance"] == "dot"
+    assert _one(status)["distance_matches"] is False
 
 
 @pytest.mark.asyncio
@@ -474,5 +484,5 @@ async def test_health_treats_an_unreadable_distance_as_not_matching(
 
     status = await client.check_health()
 
-    assert status["distance"] is None
-    assert status["distance_matches"] is False
+    assert _one(status)["distance"] is None
+    assert _one(status)["distance_matches"] is False

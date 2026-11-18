@@ -137,6 +137,7 @@ def test_query_result_shape_matches_spec(
         "text",
         "classification_group",
         "score",
+        "org",
         "source_path_rel",
         "file_type",
         "chunk_index",
@@ -151,6 +152,9 @@ def test_query_result_shape_matches_spec(
     minimal = body["results"][1]
     assert minimal["source_path_rel"] is None
     assert minimal["chunk_index"] is None
+
+    # org is dprox's to state, from the collection it searched, not the payload
+    assert {hit["org"] for hit in body["results"]} == {"testorg"}
 
 
 # --- auth + identity ----------------------------------------------------------

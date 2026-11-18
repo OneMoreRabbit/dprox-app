@@ -1,9 +1,9 @@
-# Example dprox config — production shape.
-# Per-org values are templated by the platform's Ansible from the registry.
-# Schema: see src/dprox/config.py and dprox-design-spec-v0.1.md §6.2.
-
-# Org name — for logging only.
-org: arc
+# Example dprox config — production shape, v0.3.0.
+# Templated by the platform's Ansible from the registry.
+# Schema: see src/dprox/config.py and dprox-design-spec-v0_3.
+#
+# One dprox answers every org, so there is no top-level `org:` key. A config
+# that still carries one fails at startup rather than being ignored.
 
 server:
   bind: "0.0.0.0:8443"
@@ -42,11 +42,18 @@ embedding:
   vector_dim: 768
   timeout_seconds: 10
 
-# Qdrant (read-only access).
+# Qdrant (read-only access). One server, one collection for each org.
 qdrant:
-  url: http://qdrant_arc:6333
+  url: http://qdrant:6333
   api_key_env: QDRANT_RO_API_KEY     # name of env var holding the RO key
-  collection: documents
+  # REQUIRED, at least one entry: org name -> collection name. The org names
+  # must be the ones the plan's groups[] section states, or no caller ever
+  # resolves to them. Nothing is derived from a name and there is no default.
+  # Two orgs may not share a collection: dprox refuses to start, because that
+  # would make the org check a no-op and leave only the group filter.
+  collections:
+    arc: arc_documents
+    job: job_documents
   default_limit: 10
   max_limit: 50
   timeout_seconds: 10

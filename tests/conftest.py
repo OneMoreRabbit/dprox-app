@@ -74,7 +74,9 @@ def plan_yaml(tmp_path: Path) -> Path:
 
 def _baseline_config_dict(tmp_path: Path, plan_path: Path) -> dict:
     return {
-        "org": "test",
+        # No top-level `org:` since 0.3 — one dprox answers every org. The
+        # orgs it serves are the keys of qdrant.collections, and they must be
+        # orgs the plan's groups[] names, or no caller resolves to them.
         "server": {
             "bind": "127.0.0.1:8443",
             "max_body_bytes": 65536,
@@ -108,7 +110,7 @@ def _baseline_config_dict(tmp_path: Path, plan_path: Path) -> dict:
         "qdrant": {
             "url": "http://localhost:6333",
             "api_key_env": "QDRANT_RO_API_KEY",
-            "collection": "documents",
+            "collections": {"testorg": "documents"},
             "default_limit": 10,
             "max_limit": 50,
             "timeout_seconds": 10,

@@ -13,7 +13,13 @@ from dprox.config import Config
 from dprox.mtls import AuthFailure, auth_failure_to_dict, require_mtls
 from dprox.ollama import OllamaClient, OllamaTimeout, OllamaUnavailable
 from dprox.plan import PlanCache, PlanError
-from dprox.qdrant import QdrantClient, QdrantHit, QdrantTimeout, QdrantUnavailable
+from dprox.qdrant import (
+    QdrantClient,
+    QdrantHit,
+    QdrantOrgNotConfigured,
+    QdrantTimeout,
+    QdrantUnavailable,
+)
 from dprox.version import IMAGE, __version__
 
 
@@ -100,6 +106,9 @@ def _hit_to_dict(h: QdrantHit) -> dict[str, Any]:
         "text": h.text,
         "classification_group": h.classification_group,
         "score": h.score,
+        # Which org the passage came from. Added in 0.3: a result list can
+        # now span orgs, and source_path_rel alone does not say which.
+        "org": h.org,
         "source_path_rel": h.source_path_rel,
         "file_type": h.file_type,
         "chunk_index": h.chunk_index,
@@ -227,17 +236,19 @@ def create_app(
             plan_check["loaded"]
             and ollama_check["reachable"]
             and ollama_check["model_present"]
+            # Every org's collection, not one of them: one bad collection
+            # makes this dprox wrong for that org and it must show here.
             and qdrant_check["reachable"]
-            and qdrant_check["collection_exists"]
-            and qdrant_check["vector_dim_matches"]
+            and qdrant_check["collections_exist"]
+            and qdrant_check["vector_dims_match"]
             # A collection with the wrong metric returns wrongly ranked
             # passages and no error, so it is degraded, not ok.
-            and qdrant_check["distance_matches"]
+            and qdrant_check["distances_match"]
         )
 
         body = {
             "status": "ok" if ok else "degraded",
-            "org": config.org,
+            "orgs": sorted(config.qdrant.collections),
             "checks": {
                 "plan": plan_check,
                 "ollama": ollama_check,
@@ -298,12 +309,20 @@ def create_app(
             )
 
         groups_applied = sorted(entry.groups)
+        orgs_applied = sorted(entry.orgs)
 
-        def _audit_failure(error_code: str, exc: Exception, ollama_ms: int | None = None) -> None:
+        def _audit_failure(
+            error_code: str,
+            exc: Exception,
+            ollama_ms: int | None = None,
+            collections_searched: list[str] | None = None,
+        ) -> None:
             audit.info(
                 "query_failed",
                 agent=entry.name,
                 groups_applied=groups_applied,
+                orgs_applied=orgs_applied,
+                collections_searched=collections_searched,
                 query_hash=query_hash,
                 error=error_code,
                 error_class=exc.__class__.__name__,
@@ -322,8 +341,18 @@ def create_app(
             return _error_response(502, "upstream_unavailable", str(exc))
 
         # --- 5. RBAC-filtered search -------------------------------------------
+        # Two checks: entry.orgs chooses the collections, entry.groups filters
+        # inside each. Both come from the plan via the verified cert CN; no
+        # part of the request body reaches either (spec §3.4).
         try:
-            hits, qdrant_ms = await qdrant.search(vector, entry.groups, limit)
+            hits, qdrant_ms, collections_searched = await qdrant.search(
+                vector, entry.groups, entry.orgs, limit
+            )
+        except QdrantOrgNotConfigured as exc:
+            # A deployment fault: the plan grants an org this dprox cannot
+            # reach. Refused, because searching the rest would look complete.
+            _audit_failure("upstream_unavailable", exc, ollama_ms=ollama_ms)
+            return _error_response(502, "upstream_unavailable", str(exc))
         except QdrantTimeout as exc:
             _audit_failure("upstream_timeout", exc, ollama_ms=ollama_ms)
             return _error_response(504, "upstream_timeout", str(exc))
@@ -336,6 +365,11 @@ def create_app(
         event_kwargs: dict[str, Any] = {
             "agent": entry.name,
             "groups_applied": groups_applied,
+            "orgs_applied": orgs_applied,
+            # The design asks for this by name: the audit log records which
+            # collections were searched, so a wrong org check is readable
+            # afterwards and not only inferable from what came back.
+            "collections_searched": collections_searched,
             "query_hash": query_hash,
             "result_count": len(hits),
             "latency_ms": latency_ms,
@@ -356,6 +390,7 @@ def create_app(
                 "metadata": {
                     "agent": entry.name,
                     "groups_applied": groups_applied,
+                    "orgs_applied": orgs_applied,
                     "result_count": len(hits),
                     "query_hash": query_hash,
                 },

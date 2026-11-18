@@ -86,10 +86,39 @@ class EmbeddingConfig(_Strict):
 class QdrantConfig(_Strict):
     url: str = Field(min_length=1)
     api_key_env: str = Field(min_length=1)
-    collection: str = Field(min_length=1)
+    # One dprox serves every org, so the collection is no longer one name:
+    # it is a collection for each org, keyed by the org name the plan's
+    # groups[] section states. There is no default and no derivation from
+    # the org name — the estate declares both sides (constitution §10, §11).
+    collections: dict[str, str] = Field(min_length=1)
     default_limit: int = Field(gt=0)
     max_limit: int = Field(gt=0)
     timeout_seconds: int = Field(gt=0, le=300)
+
+    @field_validator("collections")
+    @classmethod
+    def _collections_are_distinct(cls, v: dict[str, str]) -> dict[str, str]:
+        """Refuse blanks, and refuse two orgs pointing at one collection.
+
+        Two orgs sharing a collection would put their passages in one place
+        and make the org check a no-op: every caller would reach both orgs'
+        passages, held back only by the group filter. That is the one failure
+        the two checks exist to survive, so it is refused at startup.
+        """
+        for org, collection in v.items():
+            if not org.strip():
+                raise ValueError("an org name in collections is empty")
+            if not collection.strip():
+                raise ValueError(f"collection for org {org!r} is empty")
+        seen: dict[str, str] = {}
+        for org, collection in v.items():
+            if collection in seen:
+                raise ValueError(
+                    f"orgs {seen[collection]!r} and {org!r} both name collection "
+                    f"{collection!r}; one collection holds one org"
+                )
+            seen[collection] = org
+        return v
 
     @field_validator("max_limit")
     @classmethod
@@ -107,7 +136,11 @@ class LoggingConfig(_Strict):
 
 
 class Config(_Strict):
-    org: str = Field(min_length=1)
+    # No top-level `org:`. One dprox answers every org, so there is no single
+    # org it belongs to; the orgs it serves are the keys of
+    # `qdrant.collections`, and which of them a caller reaches is decided per
+    # request from the plan. `extra="forbid"` means a config still carrying
+    # `org:` fails at startup rather than being quietly ignored.
     server: ServerConfig
     mtls: MTLSConfig
     plan: PlanConfig

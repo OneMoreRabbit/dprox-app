@@ -14,7 +14,7 @@ from dprox.config import (
 
 
 def test_baseline_config_loads(baseline_config: Config) -> None:
-    assert baseline_config.org == "test"
+    assert baseline_config.qdrant.collections == {"testorg": "documents"}
     assert baseline_config.server.host == "127.0.0.1"
     assert baseline_config.server.port == 8443
     assert baseline_config.qdrant.api_key_env == "QDRANT_RO_API_KEY"
@@ -24,7 +24,7 @@ def test_baseline_config_loads(baseline_config: Config) -> None:
 def test_loads_from_file(write_config, baseline_config_dict) -> None:
     path = write_config(baseline_config_dict)
     config = load_config(path)
-    assert config.org == "test"
+    assert config.qdrant.collections == {"testorg": "documents"}
     assert isinstance(config.mtls.ca_cert_path, Path)
 
 
@@ -153,7 +153,7 @@ def test_load_uses_env_path(monkeypatch, write_config, baseline_config_dict) -> 
     path = write_config(baseline_config_dict, name="from-env.yml")
     monkeypatch.setenv("DPROX_CONFIG", str(path))
     config = load_config()
-    assert config.org == "test"
+    assert config.qdrant.collections == {"testorg": "documents"}
 
 
 # Removed in 0.1.3: three settings that were parsed, validated and read by
