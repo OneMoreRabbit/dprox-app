@@ -46,6 +46,10 @@ packages = ["src/dprox"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "tools/dprox-query/tests"]
+# dprox-query is its own distribution. Putting its source on the path means a
+# bare checkout runs both test suites with one `pytest`, without a second
+# install step that CI could be missing.
+pythonpath = ["src", "tools/dprox-query/src"]
 asyncio_mode = "auto"
 addopts = "-q"
 
