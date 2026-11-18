@@ -1,7 +1,7 @@
 ---
 title: Release notes — dprox-app
 status: active
-updated: 2026-10-08
+updated: 2026-11-18
 owner: agent-eco.component.dprox
 about: one short entry per release, newest first — what changed and what anyone must do about it
 ---
@@ -12,6 +12,62 @@ Newest first, and the one home for release history (version numbering rule 0.2).
 Every built version gets a line under **Built, not yet released**; when it is
 tagged on `main` those lines become the tag's entry, with TL;DR and Action, in
 the tagging commit.
+
+## v0.3.0 — 2026-11-18 (built, not yet released)
+
+**TL;DR:** one dprox answers every org, and there is a search command,
+`dprox-query`, for seats and OpenClaw agents. **Breaking for deployment:**
+`config.yml` must be rewritten before the image is rolled, and every caller's
+plan must carry `groups[]`.
+
+- **One dprox for every org.** The accepted design in one sentence: dprox
+  searches only the collections of the caller's orgs, and inside each keeps
+  only passages of the caller's groups. If one check is wrong, the other still
+  holds. The caller's orgs come from the plan's `groups[]` section; a group's
+  org is never parsed out of its name (constitution principle 10).
+- **A result now carries `org`.** A merged list spans orgs and
+  `source_path_rel` is relative to an org's own root, so without it two orgs'
+  passages at the same path are indistinguishable. Response metadata gains
+  `orgs_applied`.
+- **The audit log records `collections_searched` and `orgs_applied`,** so a
+  wrong org check is readable afterwards and not only inferable from what came
+  back.
+- **Refusals, not quiet shortenings.** A caller holding groups in an org this
+  dprox has no collection for gets 502 and nothing is searched; one collection
+  failing fails the whole search; two orgs naming one collection is refused at
+  startup. In each case the alternative returns a short answer that reads
+  exactly like a complete one.
+- **`/healthz` checks every collection,** not one. One org's collection
+  rebuilt with the wrong metric or the wrong model is the fault that is
+  otherwise invisible, and checking one would clear all of them. `dprox health`
+  prints a line for each org, pass or fail.
+- **`dprox-query`,** a distribution of its own in `tools/dprox-query`, released
+  from this repo by this tag and attached to the release as a wheel. It is
+  installed with pipx at image build, never while an agent runs. Its address,
+  CA, certificate and key are all required with no defaults, written by the
+  estate into the seat's persistent home. It states which dprox versions it
+  works with — 0.3.0 up to but not including 0.4.0 — and checks before every
+  question, not only in `dprox-query check`.
+
+**Action — the estate, before rolling the image:**
+
+1. Rewrite `config.yml`. Remove the top-level `org:`. Replace
+   `qdrant.collection: <name>` with a collection for each org:
+
+   ```yaml
+   qdrant:
+     collections:
+       arc: arc_documents
+       job: job_documents
+   ```
+
+   Both old keys fail at startup rather than being ignored, because the schema
+   forbids unknown keys. `examples/config.example.yml` is the full shape.
+2. Roll rbac-compiler v0.7.3 or later first, so the plan carries `groups[]`.
+   dprox 0.3.0 refuses a plan without it, and refuses a plan where a caller
+   holds a group `groups[]` does not list.
+3. Place `dprox-query`'s configuration, certificate and key in each seat's
+   persistent home. `dprox-query check` says whether all three are in place.
 
 ## v0.2.0 — 2026-11-13
 
