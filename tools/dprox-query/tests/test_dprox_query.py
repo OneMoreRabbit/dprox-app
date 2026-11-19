@@ -417,3 +417,30 @@ def test_a_document_passage_still_prints_its_path(
     result = _run(["ask", "x"], monkeypatch, handler, config_file)
 
     assert "arc:hr/wages.docx" in result.output
+
+
+def test_the_person_is_told_when_passages_were_dropped(
+    monkeypatch, config_file: Path
+) -> None:
+    """A shortened answer must not read like a complete one."""
+    handler, _seen = _ok_handler(
+        results=[{"text": "t", "org": "arc", "source_path_rel": "a.docx"}],
+        metadata={"agent": "a", "orgs_applied": ["arc"], "dropped_count": 2},
+    )
+    result = _run(["ask", "x"], monkeypatch, handler, config_file)
+
+    assert result.exit_code == 0, result.output
+    assert "2" in result.output
+    assert "could not be read" in result.output
+
+
+def test_nothing_is_said_when_nothing_was_dropped(
+    monkeypatch, config_file: Path
+) -> None:
+    handler, _seen = _ok_handler(
+        results=[{"text": "t", "org": "arc", "source_path_rel": "a.docx"}],
+        metadata={"agent": "a", "orgs_applied": ["arc"], "dropped_count": 0},
+    )
+    result = _run(["ask", "x"], monkeypatch, handler, config_file)
+
+    assert "could not be read" not in result.output

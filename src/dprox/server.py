@@ -362,9 +362,10 @@ def create_app(
         # inside each. Both come from the plan via the verified cert CN; no
         # part of the request body reaches either (spec §3.4).
         try:
-            hits, qdrant_ms, collections_searched = await qdrant.search(
-                vector, entry.groups, entry.orgs, limit
-            )
+            found = await qdrant.search(vector, entry.groups, entry.orgs, limit)
+            hits = found.hits
+            qdrant_ms = found.elapsed_ms
+            collections_searched = found.collections
         except QdrantOrgNotConfigured as exc:
             # A deployment fault: the plan grants an org this dprox cannot
             # reach. Refused, because searching the rest would look complete.
@@ -378,6 +379,18 @@ def create_app(
             return _error_response(502, "upstream_unavailable", str(exc))
 
         # --- 6. Audit + response ----------------------------------------------
+        # A dropped passage is a defect in what was written, not in the query.
+        # It is logged once per passage at WARNING, naming the collection and
+        # what was missing, because it fires only when something is wrong and
+        # nothing else in the estate is watching for it.
+        for reason in found.dropped:
+            audit.warning(
+                "passage_dropped",
+                agent=entry.name,
+                query_hash=query_hash,
+                reason=reason,
+            )
+
         latency_ms = int((time.monotonic() - start_mono) * 1000)
         event_kwargs: dict[str, Any] = {
             "agent": entry.name,
@@ -387,6 +400,7 @@ def create_app(
             # collections were searched, so a wrong org check is readable
             # afterwards and not only inferable from what came back.
             "collections_searched": collections_searched,
+            "dropped_count": len(found.dropped),
             "query_hash": query_hash,
             "result_count": len(hits),
             "latency_ms": latency_ms,
@@ -409,6 +423,10 @@ def create_app(
                     "groups_applied": groups_applied,
                     "orgs_applied": orgs_applied,
                     "result_count": len(hits),
+                    # How many passages the index held that dprox could not
+                    # read, so a shortened answer does not read like a
+                    # complete one. Normally 0.
+                    "dropped_count": len(found.dropped),
                     "query_hash": query_hash,
                 },
             },

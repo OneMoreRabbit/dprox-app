@@ -64,6 +64,18 @@ the one field that tells the two kinds of passage apart
 (qdrant-collection-contract 0.4)."""
 
 
+class MalformedPassage(QdrantUnavailable):
+    """One passage dprox cannot read: no text, no group, or unattributable.
+
+    A subclass of QdrantUnavailable so that one escaping anywhere outside the
+    search loop is still a 502 rather than a 500. Inside the loop it is caught
+    per passage: the passage is dropped and counted, because dropping is
+    fail-closed — nothing is shown whose group could not be read — and one bad
+    point in a hundred thousand must not make a caller's search fail on some
+    questions and work on others.
+    """
+
+
 @dataclass(frozen=True)
 class ConversationTurn:
     """Who said this, in which conversation (contract 0.4).
@@ -110,6 +122,21 @@ class QdrantHit:
     indexed_at: str | None = None
     conversation: ConversationTurn | None = None
     """Set when ``file_type`` is ``conversation``, null otherwise."""
+
+
+@dataclass(frozen=True)
+class SearchResult:
+    """What one search produced, including what it could not read.
+
+    ``dropped`` carries one line for each passage thrown away, so the fault is
+    readable in the audit log and the count reaches the caller. A short answer
+    that reads like a complete one is the thing being avoided.
+    """
+
+    hits: list[QdrantHit]
+    elapsed_ms: int
+    collections: list[str]
+    dropped: list[str]
 
 
 REQUIRED_DISTANCE = "cosine"
@@ -225,8 +252,8 @@ class QdrantClient:
         groups: frozenset[str],
         orgs: frozenset[str],
         limit: int,
-    ) -> tuple[list[QdrantHit], int, list[str]]:
-        """Run the RBAC-filtered search. Returns (hits, elapsed_ms, collections).
+    ) -> SearchResult:
+        """Run the RBAC-filtered search.
 
         Both checks are here, and they are independent. ``orgs`` chooses the
         collections; ``groups`` builds the filter applied inside every one of
@@ -242,6 +269,13 @@ class QdrantClient:
         One collection failing fails the whole search. A partial answer is
         indistinguishable from a complete one at the caller.
 
+        A single malformed passage does NOT fail the search: it is dropped and
+        counted, and the count is returned so the caller is told the answer was
+        shortened. Dropping is fail-closed — a passage whose group cannot be
+        read is never shown — and one bad point out of a hundred thousand
+        should not make a caller's search break on some questions and work on
+        others.
+
         Raises QdrantTimeout on timeout, QdrantOrgNotConfigured when an org
         has no collection, QdrantUnavailable on every other failure.
         """
@@ -250,7 +284,7 @@ class QdrantClient:
         if not targets:
             # No orgs means no groups, which the filter would fail closed on
             # anyway. Nothing is searched and the audit line says so.
-            return [], 0, []
+            return SearchResult(hits=[], elapsed_ms=0, collections=[], dropped=[])
 
         q_filter = build_classification_filter(groups)
         start = time.monotonic()
@@ -264,10 +298,15 @@ class QdrantClient:
         elapsed_ms = int((time.monotonic() - start) * 1000)
 
         hits: list[QdrantHit] = []
-        for (org, _collection), result in zip(targets, results, strict=True):
+        dropped: list[str] = []
+        for (org, collection), result in zip(targets, results, strict=True):
             if isinstance(result, BaseException):
                 raise result
-            hits.extend(self._point_to_hit(p, org) for p in result)
+            for point in result:
+                try:
+                    hits.append(self._point_to_hit(point, org))
+                except MalformedPassage as exc:
+                    dropped.append(f"{collection}: {exc}")
 
         # Highest score first; org, path and passage number break ties so two
         # runs of the same query return the same order.
@@ -279,7 +318,12 @@ class QdrantClient:
                 h.chunk_index if h.chunk_index is not None else 0,
             )
         )
-        return hits[:limit], elapsed_ms, collections
+        return SearchResult(
+            hits=hits[:limit],
+            elapsed_ms=elapsed_ms,
+            collections=collections,
+            dropped=dropped,
+        )
 
     async def _search_one(
         self,
@@ -337,13 +381,13 @@ class QdrantClient:
         text = payload.get("text")
         group = payload.get("classification_group")
         if not isinstance(text, str) or not text:
-            raise QdrantUnavailable(
-                f"qdrant point id={getattr(point, 'id', '?')!r} missing 'text' payload"
+            raise MalformedPassage(
+                f"point id={getattr(point, 'id', '?')!r} missing 'text' payload"
             )
         if not isinstance(group, str) or not group:
             point_id = getattr(point, "id", "?")
-            raise QdrantUnavailable(
-                f"qdrant point id={point_id!r} missing 'classification_group' payload"
+            raise MalformedPassage(
+                f"point id={point_id!r} missing 'classification_group' payload"
             )
         file_type = payload.get("file_type")
         return QdrantHit(
@@ -379,9 +423,9 @@ class QdrantClient:
         ]
         if missing:
             point_id = getattr(point, "id", "?")
-            raise QdrantUnavailable(
-                f"qdrant point id={point_id!r} is a conversation passage "
-                f"missing {', '.join(missing)} — contract 0.4 requires it"
+            raise MalformedPassage(
+                f"point id={point_id!r} is a conversation passage missing "
+                f"{', '.join(missing)} — contract 0.4 requires it"
             )
         sidechain = payload.get("sidechain")
         return ConversationTurn(

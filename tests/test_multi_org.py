@@ -146,11 +146,11 @@ async def test_a_caller_in_one_org_searches_only_that_collection(
     backend = _backend({"arc_documents": [], "job_documents": []})
     client = _qdrant(two_org_config, backend)
 
-    _hits, _ms, collections = await client.search(
+    found = await client.search(
         [0.1] * 768, frozenset({"arc_g1_eng"}), frozenset({"arc"}), limit=10
     )
 
-    assert collections == ["arc_documents"]
+    assert found.collections == ["arc_documents"]
     searched = [c.kwargs["collection_name"] for c in backend.query_points.call_args_list]
     assert searched == ["arc_documents"], "the other org's collection was never opened"
 
@@ -166,15 +166,15 @@ async def test_a_caller_in_two_orgs_searches_both_collections(
     )
     client = _qdrant(two_org_config, backend)
 
-    hits, _ms, collections = await client.search(
+    found = await client.search(
         [0.1] * 768,
         frozenset({"arc_g1_eng", "job_g1_eng"}),
         frozenset({"arc", "job"}),
         limit=10,
     )
 
-    assert collections == ["arc_documents", "job_documents"]
-    assert [h.org for h in hits] == ["arc", "job"]
+    assert found.collections == ["arc_documents", "job_documents"]
+    assert [h.org for h in found.hits] == ["arc", "job"]
 
 
 async def test_the_group_filter_is_applied_in_every_collection(
@@ -200,12 +200,10 @@ async def test_no_orgs_searches_nothing(two_org_config: Config) -> None:
     backend = _backend({"arc_documents": [], "job_documents": []})
     client = _qdrant(two_org_config, backend)
 
-    hits, _ms, collections = await client.search(
-        [0.1] * 768, frozenset(), frozenset(), limit=10
-    )
+    found = await client.search([0.1] * 768, frozenset(), frozenset(), limit=10)
 
-    assert hits == []
-    assert collections == []
+    assert found.hits == []
+    assert found.collections == []
     backend.query_points.assert_not_called()
 
 
@@ -229,15 +227,15 @@ async def test_results_from_two_collections_are_merged_by_score(
     )
     client = _qdrant(two_org_config, backend)
 
-    hits, _ms, _collections = await client.search(
+    found = await client.search(
         [0.1] * 768,
         frozenset({"arc_g1_eng", "job_g1_eng"}),
         frozenset({"arc", "job"}),
         limit=10,
     )
 
-    assert [h.score for h in hits] == [0.91, 0.77, 0.55, 0.40]
-    assert [h.org for h in hits] == ["arc", "job", "job", "arc"]
+    assert [h.score for h in found.hits] == [0.91, 0.77, 0.55, 0.40]
+    assert [h.org for h in found.hits] == ["arc", "job", "job", "arc"]
 
 
 async def test_the_merged_list_is_cut_back_to_the_limit(
@@ -252,15 +250,15 @@ async def test_the_merged_list_is_cut_back_to_the_limit(
     )
     client = _qdrant(two_org_config, backend)
 
-    hits, _ms, _collections = await client.search(
+    found = await client.search(
         [0.1] * 768,
         frozenset({"arc_g1_eng", "job_g1_eng"}),
         frozenset({"arc", "job"}),
         limit=3,
     )
 
-    assert len(hits) == 3
-    assert [h.org for h in hits] == ["arc", "arc", "arc"], "the three best were all arc's"
+    assert len(found.hits) == 3
+    assert [h.org for h in found.hits] == ["arc", "arc", "arc"], "the three best were arc's"
 
 
 # --- refusals -----------------------------------------------------------------

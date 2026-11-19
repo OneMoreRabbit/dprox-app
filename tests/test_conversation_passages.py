@@ -124,3 +124,78 @@ def test_the_values_the_contract_uses_for_unknown_are_accepted(
 def test_a_sidechain_turn_is_marked() -> None:
     hit = QdrantClient._point_to_hit(_point(dict(TURN, sidechain=True)), "arc")
     assert hit.conversation.sidechain is True
+
+
+# --- a dropped passage, end to end --------------------------------------------
+
+
+def test_one_bad_passage_does_not_fail_the_search(
+    baseline_config, plan_cache, mock_ollama, mock_qdrant_backend
+) -> None:
+    """One unreadable point out of a hundred thousand must not break a caller.
+
+    Arch suggested the choice (hub #16875); this is the behaviour chosen, and
+    it applies to a missing `text` and an unattributable turn alike.
+    """
+    import structlog
+    from fastapi.testclient import TestClient
+
+    from dprox.mtls import require_mtls
+    from dprox.qdrant import QdrantClient
+    from dprox.server import create_app
+
+    bad_turn = dict(TURN)
+    del bad_turn["role"]
+    mock_qdrant_backend.query_points.return_value = SimpleNamespace(
+        points=[_point(bad_turn), _point(DOCUMENT)]
+    )
+    qdrant = QdrantClient(
+        baseline_config.qdrant,
+        baseline_config.embedding.vector_dim,
+        backend=mock_qdrant_backend,
+    )
+    app = create_app(baseline_config, plan_cache, ollama=mock_ollama, qdrant=qdrant)
+    app.dependency_overrides[require_mtls] = lambda: "agent_alice"
+
+    with structlog.testing.capture_logs() as logs:
+        with TestClient(app) as c:
+            response = c.post("/v1/query", json={"query": "x"})
+
+    assert response.status_code == 200, "the search still answers"
+    body = response.json()
+    assert len(body["results"]) == 1
+    assert body["results"][0]["file_type"] == "docx"
+
+    # The caller is told the answer was shortened, so it does not read complete.
+    assert body["metadata"]["dropped_count"] == 1
+
+    # And the fault is named in the audit log, once, at warning level.
+    dropped = [e for e in logs if e.get("event") == "passage_dropped"]
+    assert len(dropped) == 1
+    assert dropped[0]["log_level"] == "warning"
+    assert "role" in dropped[0]["reason"]
+    assert "documents" in dropped[0]["reason"]
+
+    query_events = [e for e in logs if e.get("event") == "query"]
+    assert query_events[-1]["dropped_count"] == 1
+
+
+def test_a_healthy_query_reports_nothing_dropped(
+    baseline_config, plan_cache, mock_ollama, mock_qdrant
+) -> None:
+    """Zero when nothing is wrong is what makes a non-zero worth reading."""
+    import structlog
+    from fastapi.testclient import TestClient
+
+    from dprox.mtls import require_mtls
+    from dprox.server import create_app
+
+    app = create_app(baseline_config, plan_cache, ollama=mock_ollama, qdrant=mock_qdrant)
+    app.dependency_overrides[require_mtls] = lambda: "agent_alice"
+
+    with structlog.testing.capture_logs() as logs:
+        with TestClient(app) as c:
+            body = c.post("/v1/query", json={"query": "x"}).json()
+
+    assert body["metadata"]["dropped_count"] == 0
+    assert [e for e in logs if e.get("event") == "passage_dropped"] == []

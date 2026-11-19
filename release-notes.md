@@ -51,6 +51,16 @@ plan must carry `groups[]`.
   conversation passage missing the four fields that attribute it is refused,
   as one missing `text` already was. `dprox-query` prints the speaker rather
   than the session file's path.
+- **A passage dprox cannot read is dropped and counted, not raised.** Before
+  this, one unreadable point made the whole search 502 — so a caller's search
+  would fail on some questions and work on others, which reads as flakiness
+  rather than as a fault in the index. Now the passage is dropped (fail-closed:
+  nothing is shown whose group could not be read), the response metadata
+  carries `dropped_count` so a shortened answer does not read like a complete
+  one, and each drop is logged at WARNING as `passage_dropped` naming the
+  collection and the missing field. `dprox-query` says so on stderr. The same
+  rule applies to a missing `text`, a missing `classification_group` and an
+  unattributable turn — one rule, not three.
 - **`dprox-query`,** a distribution of its own in `tools/dprox-query`, released
   from this repo by this tag and attached to the release as a wheel. It is
   installed with pipx at image build, never while an agent runs. Its address,

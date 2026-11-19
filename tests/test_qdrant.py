@@ -13,6 +13,7 @@ from qdrant_client.models import FieldCondition, Filter, MatchAny
 from dprox.config import QdrantConfig
 from dprox.qdrant import (
     CLASSIFICATION_GROUP_KEY,
+    MalformedPassage,
     QdrantClient,
     QdrantHit,
     QdrantTimeout,
@@ -172,9 +173,8 @@ async def test_search_projects_payload_to_qdrant_hit() -> None:
     )
     client = _client(backend)
 
-    hits, elapsed_ms, collections = await client.search(
-        [0.1] * 4, frozenset({"arc_g0"}), ORGS, limit=10
-    )
+    found = await client.search([0.1] * 4, frozenset({"arc_g0"}), ORGS, limit=10)
+    hits, elapsed_ms = found.hits, found.elapsed_ms
 
     assert len(hits) == 1
     h = hits[0]
@@ -195,44 +195,80 @@ async def test_search_handles_minimal_payload() -> None:
     )
     client = _client(backend)
 
-    hits, _, _ = await client.search([0.1] * 4, frozenset({"g_min"}), ORGS, limit=10)
+    found = await client.search([0.1] * 4, frozenset({"g_min"}), ORGS, limit=10)
+    hits = found.hits
 
     assert hits[0].source_path_rel is None
     assert hits[0].file_type is None
     assert hits[0].chunk_index is None
 
 
-async def test_search_rejects_point_missing_text() -> None:
+# A passage dprox cannot read is DROPPED and COUNTED, not raised. Dropping is
+# fail-closed — nothing is shown whose group could not be read — and one bad
+# point out of a hundred thousand must not make a caller's search fail on some
+# questions and work on others (arch's suggestion, hub #16875; dprox's call).
+
+
+async def test_a_point_missing_text_is_dropped_and_counted() -> None:
     backend = AsyncMock()
     backend.query_points.return_value = _response(
-        [_point({"classification_group": "g_eng"})]  # no 'text'
+        [
+            _point({"classification_group": "g_eng"}),  # no 'text'
+            _point({"text": "fine", "classification_group": "g_eng"}, point_id=2),
+        ]
     )
     client = _client(backend)
 
-    with pytest.raises(QdrantUnavailable, match="missing 'text'"):
-        await client.search([0.1] * 4, frozenset({"g_eng"}), ORGS, limit=10)
+    found = await client.search([0.1] * 4, frozenset({"g_eng"}), ORGS, limit=10)
+
+    assert [h.text for h in found.hits] == ["fine"], "the good passage still comes back"
+    assert len(found.dropped) == 1
+    assert "missing 'text'" in found.dropped[0]
+    assert "documents" in found.dropped[0], "the collection is named"
 
 
-async def test_search_rejects_point_missing_classification_group() -> None:
+async def test_a_point_missing_classification_group_is_dropped_and_counted() -> None:
+    """Fail-closed: a passage whose group cannot be read is never shown."""
     backend = AsyncMock()
-    backend.query_points.return_value = _response(
-        [_point({"text": "orphan"})]  # no classification_group
-    )
+    backend.query_points.return_value = _response([_point({"text": "orphan chunk"})])
     client = _client(backend)
 
-    with pytest.raises(QdrantUnavailable, match="missing 'classification_group'"):
-        await client.search([0.1] * 4, frozenset({"g"}), ORGS, limit=10)
+    found = await client.search([0.1] * 4, frozenset({"g"}), ORGS, limit=10)
+
+    assert found.hits == []
+    assert len(found.dropped) == 1
+    assert "missing 'classification_group'" in found.dropped[0]
 
 
-async def test_search_rejects_point_with_empty_text() -> None:
+async def test_a_point_with_empty_text_is_dropped_and_counted() -> None:
     backend = AsyncMock()
     backend.query_points.return_value = _response(
         [_point({"text": "", "classification_group": "g"})]
     )
     client = _client(backend)
 
-    with pytest.raises(QdrantUnavailable, match="missing 'text'"):
-        await client.search([0.1] * 4, frozenset({"g"}), ORGS, limit=10)
+    found = await client.search([0.1] * 4, frozenset({"g"}), ORGS, limit=10)
+
+    assert found.hits == []
+    assert len(found.dropped) == 1
+
+
+async def test_a_healthy_collection_drops_nothing() -> None:
+    """The count earns its place by being zero when nothing is wrong."""
+    backend = AsyncMock()
+    backend.query_points.return_value = _response(
+        [_point({"text": "t", "classification_group": "g"})]
+    )
+    client = _client(backend)
+
+    found = await client.search([0.1] * 4, frozenset({"g"}), ORGS, limit=10)
+
+    assert found.dropped == []
+
+
+async def test_a_malformed_passage_is_still_a_502_if_it_escapes() -> None:
+    """MalformedPassage subclasses QdrantUnavailable, so nothing becomes a 500."""
+    assert issubclass(MalformedPassage, QdrantUnavailable)
 
 
 async def test_search_rejects_response_without_points_attribute() -> None:
@@ -289,7 +325,8 @@ async def test_search_empty_results_returns_empty_list() -> None:
     backend.query_points.return_value = _response([])
     client = _client(backend)
 
-    hits, _, _ = await client.search([0.1] * 4, frozenset({"g"}), ORGS, limit=10)
+    found = await client.search([0.1] * 4, frozenset({"g"}), ORGS, limit=10)
+    hits = found.hits
     assert hits == []
 
 

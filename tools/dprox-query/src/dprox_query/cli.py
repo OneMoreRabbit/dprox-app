@@ -80,6 +80,21 @@ def _source_of(hit: dict[str, Any]) -> str:
     return f"{org}:{hit.get('source_path_rel') or '(source not recorded)'}"
 
 
+def _warn_if_shortened(metadata: dict[str, Any]) -> None:
+    """Say so when dprox could not read some of what matched.
+
+    A shortened answer that reads like a complete one is the thing being
+    avoided. Silent when the count is zero, which is almost always.
+    """
+    dropped = metadata.get("dropped_count") or 0
+    if dropped:
+        click.echo(
+            f"{dropped} more passage(s) matched but could not be read, so they "
+            f"are not shown. The index has a fault; tell whoever runs ingstr.",
+            err=True,
+        )
+
+
 def _format_result(index: int, hit: dict[str, Any]) -> str:
     """One passage: where it came from, then what it says."""
     score = hit.get("score")
@@ -134,6 +149,7 @@ def ask_command(
         # Not an error. dprox answered; nothing you may see matched.
         orgs = ", ".join(answer.metadata.get("orgs_applied") or []) or "none"
         click.echo(f"No passages matched. Orgs searched: {orgs}.")
+        _warn_if_shortened(answer.metadata)
         return
 
     for index, hit in enumerate(answer.results, start=1):
@@ -142,6 +158,7 @@ def ask_command(
 
     orgs = ", ".join(answer.metadata.get("orgs_applied") or []) or "none"
     click.echo(f"{len(answer.results)} passage(s) from org(s): {orgs}.")
+    _warn_if_shortened(answer.metadata)
 
 
 @cli.command("check", help="Check the configuration, the certificate and the server.")
