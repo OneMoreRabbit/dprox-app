@@ -144,6 +144,7 @@ def test_query_result_shape_matches_spec(
         "chunk_total",
         "modified_at",
         "indexed_at",
+        "conversation",
     }
     for hit in body["results"]:
         assert set(hit) == expected_keys

@@ -58,6 +58,36 @@ class QdrantOrgNotConfigured(QdrantError):
     """
 
 
+CONVERSATION_FILE_TYPE = "conversation"
+"""``file_type`` on a passage that is a turn of an agent's conversation —
+the one field that tells the two kinds of passage apart
+(qdrant-collection-contract 0.4)."""
+
+
+@dataclass(frozen=True)
+class ConversationTurn:
+    """Who said this, in which conversation (contract 0.4).
+
+    The contract chunks a conversation by turn and never across two "so a
+    result is attributable". That only holds if the attribution reaches the
+    caller, so these are projected rather than dropped.
+
+    ``agent``, ``conversation_id``, ``turn_id`` and ``role`` are required on a
+    conversation passage for the same reason ``text`` is: a turn attributed to
+    nobody is worse than no turn. ``runtime`` and ``turn_time`` are not —
+    the contract states ``unknown`` and ``""`` as real values the writer uses
+    when the source did not say.
+    """
+
+    agent: str
+    conversation_id: str
+    turn_id: str
+    role: str
+    runtime: str | None = None
+    turn_time: str | None = None
+    sidechain: bool | None = None
+
+
 @dataclass(frozen=True)
 class QdrantHit:
     """One Qdrant search result projected to dprox response shape (spec §4.2).
@@ -78,6 +108,8 @@ class QdrantHit:
     chunk_total: int | None = None
     modified_at: str | None = None
     indexed_at: str | None = None
+    conversation: ConversationTurn | None = None
+    """Set when ``file_type`` is ``conversation``, null otherwise."""
 
 
 REQUIRED_DISTANCE = "cosine"
@@ -313,17 +345,53 @@ class QdrantClient:
             raise QdrantUnavailable(
                 f"qdrant point id={point_id!r} missing 'classification_group' payload"
             )
+        file_type = payload.get("file_type")
         return QdrantHit(
             text=text,
             classification_group=group,
             score=float(getattr(point, "score", 0.0)),
             org=org,
             source_path_rel=payload.get("source_path_rel"),
-            file_type=payload.get("file_type"),
+            file_type=file_type,
             chunk_index=payload.get("chunk_index"),
             chunk_total=payload.get("chunk_total"),
             modified_at=payload.get("modified_at"),
             indexed_at=payload.get("indexed_at"),
+            conversation=(
+                QdrantClient._point_to_turn(point, payload)
+                if file_type == CONVERSATION_FILE_TYPE
+                else None
+            ),
+        )
+
+    @staticmethod
+    def _point_to_turn(point: Any, payload: dict) -> ConversationTurn:
+        """Project a conversation passage's attribution (contract 0.4).
+
+        The four required fields are treated as ``text`` is: absent means the
+        passage cannot be attributed, and handing the caller a turn with a null
+        speaker would be thinner-looking rather than visibly wrong.
+        """
+        missing = [
+            key
+            for key in ("agent", "conversation_id", "turn_id", "role")
+            if not isinstance(payload.get(key), str) or not payload[key]
+        ]
+        if missing:
+            point_id = getattr(point, "id", "?")
+            raise QdrantUnavailable(
+                f"qdrant point id={point_id!r} is a conversation passage "
+                f"missing {', '.join(missing)} — contract 0.4 requires it"
+            )
+        sidechain = payload.get("sidechain")
+        return ConversationTurn(
+            agent=payload["agent"],
+            conversation_id=payload["conversation_id"],
+            turn_id=payload["turn_id"],
+            role=payload["role"],
+            runtime=payload.get("runtime"),
+            turn_time=payload.get("turn_time"),
+            sidechain=sidechain if isinstance(sidechain, bool) else None,
         )
 
     async def check_health(self) -> dict[str, Any]:

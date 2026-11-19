@@ -334,3 +334,86 @@ def test_check_reports_a_degraded_dprox_as_a_failure(
 
     assert result.exit_code == 1
     assert "[FAIL] health" in result.output
+
+
+# --- conversation passages (contract 0.4) -------------------------------------
+
+
+def test_a_conversation_turn_is_printed_as_who_said_it(
+    monkeypatch, config_file: Path
+) -> None:
+    """The session file path names a file nobody reads; the speaker is the point."""
+    handler, _seen = _ok_handler(
+        results=[
+            {
+                "text": "we agreed to rebuild the seat",
+                "org": "arc",
+                "source_path_rel": "agents/claude/sessions/48ed.jsonl",
+                "file_type": "conversation",
+                "score": 0.77,
+                "chunk_index": 0,
+                "chunk_total": 1,
+                "conversation": {
+                    "agent": "agent_oversight",
+                    "runtime": "claude",
+                    "conversation_id": "48ed22d9",
+                    "turn_id": "t-14",
+                    "role": "person",
+                    "turn_time": "2026-11-18T11:00:00Z",
+                    "sidechain": False,
+                },
+            }
+        ],
+        metadata={"agent": "a", "orgs_applied": ["arc"], "result_count": 1},
+    )
+    result = _run(["ask", "x"], monkeypatch, handler, config_file)
+
+    assert result.exit_code == 0, result.output
+    assert "agent_oversight (claude) person" in result.output
+    assert "2026-11-18T11:00:00Z" in result.output
+    assert "sessions/48ed.jsonl" not in result.output
+
+
+def test_a_sub_agent_turn_says_so(monkeypatch, config_file: Path) -> None:
+    handler, _seen = _ok_handler(
+        results=[
+            {
+                "text": "t",
+                "org": "arc",
+                "file_type": "conversation",
+                "conversation": {
+                    "agent": "agent_oversight",
+                    "runtime": "codex",
+                    "conversation_id": "c",
+                    "turn_id": "t",
+                    "role": "agent",
+                    "turn_time": "",
+                    "sidechain": True,
+                },
+            }
+        ],
+        metadata={"agent": "a", "orgs_applied": ["arc"]},
+    )
+    result = _run(["ask", "x"], monkeypatch, handler, config_file)
+
+    assert "sub-agent" in result.output
+
+
+def test_a_document_passage_still_prints_its_path(
+    monkeypatch, config_file: Path
+) -> None:
+    handler, _seen = _ok_handler(
+        results=[
+            {
+                "text": "t",
+                "org": "arc",
+                "source_path_rel": "hr/wages.docx",
+                "file_type": "docx",
+                "conversation": None,
+            }
+        ],
+        metadata={"agent": "a", "orgs_applied": ["arc"]},
+    )
+    result = _run(["ask", "x"], monkeypatch, handler, config_file)
+
+    assert "arc:hr/wages.docx" in result.output

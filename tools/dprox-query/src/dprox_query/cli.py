@@ -56,17 +56,39 @@ def _load_or_exit(config_path: str | None):
     return config
 
 
+def _source_of(hit: dict[str, Any]) -> str:
+    """Where the passage came from, as a person needs to read it.
+
+    A conversation passage is a turn someone said, so the file path is the
+    wrong answer: it names a session file nobody reads. Who said it, in which
+    conversation, is the attribution the index keeps for exactly this
+    (qdrant-collection-contract 0.4).
+    """
+    org = hit.get("org") or "?"
+    turn = hit.get("conversation")
+    if isinstance(turn, dict):
+        runtime = turn.get("runtime") or "unknown"
+        said_by = turn.get("role") or "?"
+        who = f"{turn.get('agent') or '?'} ({runtime})"
+        when = turn.get("turn_time") or ""
+        head = f"{org}:{who} {said_by}"
+        if turn.get("sidechain"):
+            head += " sub-agent"
+        if when:
+            head += f" at {when}"
+        return head
+    return f"{org}:{hit.get('source_path_rel') or '(source not recorded)'}"
+
+
 def _format_result(index: int, hit: dict[str, Any]) -> str:
     """One passage: where it came from, then what it says."""
-    org = hit.get("org") or "?"
-    source = hit.get("source_path_rel") or "(source not recorded)"
     score = hit.get("score")
     chunk_index = hit.get("chunk_index")
     chunk_total = hit.get("chunk_total")
     part = ""
-    if chunk_index is not None and chunk_total:
+    if chunk_index is not None and chunk_total and chunk_total > 1:
         part = f" passage {chunk_index + 1}/{chunk_total}"
-    head = f"[{index}] {org}:{source}{part}"
+    head = f"[{index}] {_source_of(hit)}{part}"
     if isinstance(score, (int, float)):
         head += f"  score {score:.3f}"
     text = (hit.get("text") or "").strip()

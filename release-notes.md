@@ -41,6 +41,16 @@ plan must carry `groups[]`.
   rebuilt with the wrong metric or the wrong model is the fault that is
   otherwise invisible, and checking one would clear all of them. `dprox health`
   prints a line for each org, pass or fail.
+- **A conversation passage keeps its attribution.**
+  `qdrant-collection-contract` 0.4 lets a collection hold turns of an agent's
+  conversation, chunked by turn so that a result is attributable. dprox read
+  one without error before this and dropped all seven fields that say who
+  said it, so a result shape gains `conversation`: the agent, the runtime, the
+  conversation and turn ids, the role, the turn time and whether it was a
+  sub-agent. Null on a document passage, so there is one shape and not two. A
+  conversation passage missing the four fields that attribute it is refused,
+  as one missing `text` already was. `dprox-query` prints the speaker rather
+  than the session file's path.
 - **`dprox-query`,** a distribution of its own in `tools/dprox-query`, released
   from this repo by this tag and attached to the release as a wheel. It is
   installed with pipx at image build, never while an agent runs. Its address,

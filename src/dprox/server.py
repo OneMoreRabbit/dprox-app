@@ -115,6 +115,23 @@ def _hit_to_dict(h: QdrantHit) -> dict[str, Any]:
         "chunk_total": h.chunk_total,
         "modified_at": h.modified_at,
         "indexed_at": h.indexed_at,
+        # Added in 0.3 for qdrant-collection-contract 0.4: a conversation
+        # passage is one turn, chunked so that a result is attributable. That
+        # only holds if the attribution reaches the caller. Null on a document
+        # passage, so the shape stays one shape.
+        "conversation": (
+            {
+                "agent": h.conversation.agent,
+                "runtime": h.conversation.runtime,
+                "conversation_id": h.conversation.conversation_id,
+                "turn_id": h.conversation.turn_id,
+                "role": h.conversation.role,
+                "turn_time": h.conversation.turn_time,
+                "sidechain": h.conversation.sidechain,
+            }
+            if h.conversation is not None
+            else None
+        ),
     }
 
 
