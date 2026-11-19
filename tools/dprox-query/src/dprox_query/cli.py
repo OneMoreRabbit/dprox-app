@@ -24,7 +24,13 @@ from dprox_query.client import (
     healthz,
     server_version,
 )
-from dprox_query.config import ConfigError, load_config, missing_files, resolve_config_path
+from dprox_query.config import (
+    ConfigError,
+    load_config,
+    missing_files,
+    resolve_config_path,
+    unsafe_key_mode,
+)
 from dprox_query.version import __version__, describe_support
 
 _config_option = click.option(
@@ -53,6 +59,9 @@ def _load_or_exit(config_path: str | None):
             "configured file(s) not found:\n  " + "\n  ".join(gone),
             2,
         )
+    unsafe = unsafe_key_mode(config)
+    if unsafe:
+        _fail(unsafe, 2)
     return config
 
 

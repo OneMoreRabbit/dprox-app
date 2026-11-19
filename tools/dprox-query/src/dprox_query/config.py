@@ -107,6 +107,30 @@ def load_config(path: str | os.PathLike[str] | None = None) -> QueryConfig:
     )
 
 
+def unsafe_key_mode(config: QueryConfig) -> str | None:
+    """Refuse a private key that someone other than its owner can read.
+
+    The key is the caller's whole identity for search — dprox reads the CN of
+    whatever certificate is presented and answers from the plan, so a readable
+    key is a readable copy of everything that caller may see. A mode nobody
+    checks is a file mode nobody keeps, so this is checked rather than
+    documented (arch's review, hub #16893).
+
+    Returns the message to print, or None when the mode is fine.
+    """
+    try:
+        mode = config.client_key_path.stat().st_mode
+    except OSError:
+        return None  # missing_files() reports a key that is not there
+    if mode & 0o077:
+        return (
+            f"{config.client_key_path} is mode {mode & 0o777:04o}: readable by "
+            f"someone other than its owner. It is this caller's whole identity "
+            f"for search. Run: chmod 600 {config.client_key_path}"
+        )
+    return None
+
+
 def missing_files(config: QueryConfig) -> list[str]:
     """The configured files that are not there, named as the config named them.
 

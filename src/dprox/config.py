@@ -10,10 +10,18 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 DEFAULT_CONFIG_PATH = "/etc/dprox/config.yml"
 ENV_CONFIG_PATH = "DPROX_CONFIG"
@@ -75,12 +83,46 @@ class PlanConfig(_Strict):
     reload_on_unknown_cn: bool = True
     reload_min_interval_seconds: int = Field(default=5, ge=0, le=3600)
 
+    @model_validator(mode="after")
+    def _cache_must_be_able_to_notice_a_change(self) -> PlanConfig:
+        """Refuse a cache that never re-reads the plan.
+
+        `cache_enabled` with `reload_on_mtime_change` off means the plan in
+        memory is whatever was there at startup. Taking a group off a caller
+        then does nothing until dprox is restarted — and taking a group off a
+        caller is the one revocation the design promises is immediate
+        (dprox-design-spec 0.3 §5 case 1). An unknown-CN reload does not save
+        it: a caller already in the cache is never looked up again.
+
+        So this combination makes a documented guarantee silently false, which
+        is the definition of a phantom control. Refused rather than warned
+        (arch's review, hub #16893).
+        """
+        if self.cache_enabled and not self.reload_on_mtime_change:
+            raise ValueError(
+                "plan.cache_enabled with plan.reload_on_mtime_change false "
+                "never re-reads the plan, so removing a caller's group would "
+                "not take effect until restart. Turn the cache off, or turn "
+                "reload_on_mtime_change on."
+            )
+        return self
+
 
 class EmbeddingConfig(_Strict):
     endpoint: str = Field(min_length=1)
     model: str = Field(min_length=1)
     vector_dim: int = Field(gt=0, le=8192)
     timeout_seconds: int = Field(gt=0, le=300)
+
+    # Required, no default, and an empty string is a real choice meaning "this
+    # model wants no prefix" (constitution §11). A wrong prefix is invisible:
+    # it does not fail, it just lowers every score, which is why it cannot be
+    # defaulted. Whitespace is NOT stripped — nomic-embed-text's prefix is
+    # "search_query: " and the trailing space is part of it.
+    query_prefix: Annotated[str, StringConstraints(strip_whitespace=False)]
+    """Put in front of every question before it is embedded. It must match
+    what the collection was indexed with; nothing can check that, which is
+    what makes declaring it the only safe option."""
 
 
 class QdrantConfig(_Strict):

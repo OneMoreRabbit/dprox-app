@@ -12,7 +12,6 @@ rather than answer. The second check is covered in `test_qdrant.py` against
 
 from __future__ import annotations
 
-import textwrap
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -29,69 +28,6 @@ from dprox.qdrant import QdrantClient, QdrantOrgNotConfigured, QdrantUnavailable
 from dprox.server import create_app
 
 # --- fixtures: a plan and a config that span two orgs -------------------------
-
-
-@pytest.fixture
-def two_org_plan(tmp_path: Path) -> Path:
-    """A plan where one caller reads one org and another reads both.
-
-    `agent_both`'s two groups belong to different orgs, which is the case the
-    design says could not be configured before: an agent had one dprox address,
-    so it had one org.
-    """
-    target = tmp_path / "two_org_plan.yml"
-    target.write_text(
-        textwrap.dedent(
-            """
-            meta:
-              compiled_at: '2026-01-01T00:00:00Z'
-              compiler_version: 0.7.3
-              schema_version: '0.11'
-            required_groups:
-            - arc_g1_eng
-            - job_g1_eng
-            groups:
-            - name: arc_g1_eng
-              org: arc
-              grade: g1
-              vertical: engineering
-              scope: all
-            - name: job_g1_eng
-              org: job
-              grade: g1
-              vertical: engineering
-              scope: all
-            agent_users:
-            - name: agent_arc
-              groups:
-              - arc_g1_eng
-            - name: agent_both
-              groups:
-              - arc_g1_eng
-              - job_g1_eng
-            admin_users: []
-            """
-        ).lstrip(),
-        encoding="utf-8",
-    )
-    return target
-
-
-@pytest.fixture
-def two_org_config(baseline_config_dict: dict, two_org_plan: Path) -> Config:
-    data = dict(baseline_config_dict)
-    data["plan"] = dict(data["plan"], compiled_plan_path=str(two_org_plan))
-    data["qdrant"] = dict(
-        data["qdrant"], collections={"arc": "arc_documents", "job": "job_documents"}
-    )
-    return Config.model_validate(data)
-
-
-@pytest.fixture
-def two_org_plan_cache(two_org_config: Config) -> PlanCache:
-    cache = PlanCache(two_org_config.plan)
-    cache.initial_load()
-    return cache
 
 
 def _point(group: str, score: float, path: str):
@@ -147,7 +83,7 @@ async def test_a_caller_in_one_org_searches_only_that_collection(
     client = _qdrant(two_org_config, backend)
 
     found = await client.search(
-        [0.1] * 768, frozenset({"arc_g1_eng"}), frozenset({"arc"}), limit=10
+        [0.1] * 768, {"arc": frozenset({"arc_g1_eng"})}, limit=10
     )
 
     assert found.collections == ["arc_documents"]
@@ -168,8 +104,7 @@ async def test_a_caller_in_two_orgs_searches_both_collections(
 
     found = await client.search(
         [0.1] * 768,
-        frozenset({"arc_g1_eng", "job_g1_eng"}),
-        frozenset({"arc", "job"}),
+        {"arc": frozenset({"arc_g1_eng"}), "job": frozenset({"job_g1_eng"})},
         limit=10,
     )
 
@@ -177,22 +112,65 @@ async def test_a_caller_in_two_orgs_searches_both_collections(
     assert [h.org for h in found.hits] == ["arc", "job"]
 
 
-async def test_the_group_filter_is_applied_in_every_collection(
+async def test_each_collection_gets_only_its_own_org_s_groups(
     two_org_config: Config,
 ) -> None:
-    """The second check is not weakened by there being more than one collection."""
+    """This is what makes the two checks independent.
+
+    Before, one filter carrying every group the caller holds went to every
+    collection. A passage written into the wrong org's collection then came
+    back when the caller held its group — labelled with the collection's org,
+    which is the wrong org (arch's review, hub #16893).
+    """
     backend = _backend({"arc_documents": [], "job_documents": []})
     client = _qdrant(two_org_config, backend)
 
-    groups = frozenset({"arc_g1_eng", "job_g1_eng"})
-    await client.search([0.1] * 768, groups, frozenset({"arc", "job"}), limit=10)
+    await client.search(
+        [0.1] * 768,
+        {"arc": frozenset({"arc_g1_eng"}), "job": frozenset({"job_g1_eng"})},
+        limit=10,
+    )
 
-    filters = [c.kwargs["query_filter"] for c in backend.query_points.call_args_list]
-    assert len(filters) == 2
-    for f in filters:
-        condition = f.must[0]
-        assert condition.key == "classification_group"
-        assert condition.match.any == sorted(groups)
+    sent = {
+        call.kwargs["collection_name"]: call.kwargs["query_filter"].must[0].match.any
+        for call in backend.query_points.call_args_list
+    }
+    assert sent == {
+        "arc_documents": ["arc_g1_eng"],
+        "job_documents": ["job_g1_eng"],
+    }, "no collection was asked about another org's group"
+
+
+async def test_a_passage_in_the_wrong_collection_is_not_returned(
+    two_org_config: Config,
+) -> None:
+    """The caller holds the group, so this is not about permission.
+
+    It is about the answer being true: a `job` passage sitting in the `arc`
+    collection would have come back saying `org: arc`. The per-collection
+    filter stops it, and the check on what came back catches a Qdrant that
+    returned it anyway.
+    """
+    backend = _backend(
+        {
+            # job_documents' passage, sitting in arc_documents by mistake, and
+            # returned despite the filter not asking for its group.
+            "arc_documents": [_point("job_g1_eng", 0.99, "misfiled.docx")],
+            "job_documents": [_point("job_g1_eng", 0.50, "proper.docx")],
+        }
+    )
+    client = _qdrant(two_org_config, backend)
+
+    found = await client.search(
+        [0.1] * 768,
+        {"arc": frozenset({"arc_g1_eng"}), "job": frozenset({"job_g1_eng"})},
+        limit=10,
+    )
+
+    assert [h.source_path_rel for h in found.hits] == ["proper.docx"]
+    assert len(found.dropped) == 1
+    assert found.dropped[0][0] == "arc_documents"
+    assert "the filter and the index disagree" in found.dropped[0][1]
 
 
 async def test_no_orgs_searches_nothing(two_org_config: Config) -> None:
@@ -200,7 +178,7 @@ async def test_no_orgs_searches_nothing(two_org_config: Config) -> None:
     backend = _backend({"arc_documents": [], "job_documents": []})
     client = _qdrant(two_org_config, backend)
 
-    found = await client.search([0.1] * 768, frozenset(), frozenset(), limit=10)
+    found = await client.search([0.1] * 768, {}, limit=10)
 
     assert found.hits == []
     assert found.collections == []
@@ -229,8 +207,7 @@ async def test_results_from_two_collections_are_merged_by_score(
 
     found = await client.search(
         [0.1] * 768,
-        frozenset({"arc_g1_eng", "job_g1_eng"}),
-        frozenset({"arc", "job"}),
+        {"arc": frozenset({"arc_g1_eng"}), "job": frozenset({"job_g1_eng"})},
         limit=10,
     )
 
@@ -252,8 +229,7 @@ async def test_the_merged_list_is_cut_back_to_the_limit(
 
     found = await client.search(
         [0.1] * 768,
-        frozenset({"arc_g1_eng", "job_g1_eng"}),
-        frozenset({"arc", "job"}),
+        {"arc": frozenset({"arc_g1_eng"}), "job": frozenset({"job_g1_eng"})},
         limit=3,
     )
 
@@ -278,8 +254,7 @@ async def test_an_org_with_no_collection_is_refused_not_skipped(
     with pytest.raises(QdrantOrgNotConfigured) as exc:
         await client.search(
             [0.1] * 768,
-            frozenset({"arc_g1_eng", "idea_g1_eng"}),
-            frozenset({"arc", "idea"}),
+            {"arc": frozenset({"arc_g1_eng"}), "idea": frozenset({"idea_g1_eng"})},
             limit=10,
         )
 
@@ -304,8 +279,7 @@ async def test_one_collection_failing_fails_the_whole_search(
     with pytest.raises(QdrantUnavailable) as exc:
         await client.search(
             [0.1] * 768,
-            frozenset({"arc_g1_eng", "job_g1_eng"}),
-            frozenset({"arc", "job"}),
+            {"arc": frozenset({"arc_g1_eng"}), "job": frozenset({"job_g1_eng"})},
             limit=10,
         )
 

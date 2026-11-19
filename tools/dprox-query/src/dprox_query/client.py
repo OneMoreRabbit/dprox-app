@@ -8,6 +8,7 @@ point of the server refusing unknown request fields.
 
 from __future__ import annotations
 
+import ssl
 from dataclasses import dataclass
 from typing import Any
 
@@ -31,16 +32,29 @@ class Answer:
     metadata: dict[str, Any]
 
 
-def build_client(config: QueryConfig) -> httpx.Client:
-    """An httpx client that presents the caller's certificate.
+def build_ssl_context(config: QueryConfig) -> ssl.SSLContext:
+    """The TLS context: trust the estate's CA, present the caller's cert.
 
-    ``verify`` is the estate's CA: the tool checks the server as the server
-    checks the tool. It is never turned off, and there is no flag to.
+    Built here rather than passed to httpx as `verify=<path>` and
+    `cert=(...)`, which httpx 0.28 deprecates. Hostname checking and
+    certificate verification are on and there is no flag to turn either off:
+    the tool checks the server exactly as the server checks the tool.
     """
+    context = ssl.create_default_context(cafile=str(config.ca_cert_path))
+    context.check_hostname = True
+    context.verify_mode = ssl.CERT_REQUIRED
+    context.load_cert_chain(
+        certfile=str(config.client_cert_path),
+        keyfile=str(config.client_key_path),
+    )
+    return context
+
+
+def build_client(config: QueryConfig) -> httpx.Client:
+    """An httpx client that presents the caller's certificate."""
     return httpx.Client(
         base_url=config.endpoint,
-        verify=str(config.ca_cert_path),
-        cert=(str(config.client_cert_path), str(config.client_key_path)),
+        verify=build_ssl_context(config),
         timeout=config.timeout_seconds,
     )
 

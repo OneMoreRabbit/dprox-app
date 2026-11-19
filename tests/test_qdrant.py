@@ -13,6 +13,7 @@ from qdrant_client.models import FieldCondition, Filter, MatchAny
 from dprox.config import QdrantConfig
 from dprox.qdrant import (
     CLASSIFICATION_GROUP_KEY,
+    EmptyGroupSet,
     MalformedPassage,
     QdrantClient,
     QdrantHit,
@@ -21,8 +22,14 @@ from dprox.qdrant import (
     build_classification_filter,
 )
 
-ORGS = frozenset({"testorg"})
-"""The orgs the baseline test config has a collection for."""
+
+def by_org(groups: frozenset[str], org: str = "testorg") -> dict:
+    """The caller's groups, split by org — what search() now takes.
+
+    One argument rather than an org set and a group set, so an org and the
+    groups searched inside it cannot come from different places.
+    """
+    return {org: groups}
 
 
 def _one(status: dict, org: str = "testorg") -> dict:
@@ -90,12 +97,29 @@ def test_filter_groups_are_sorted_for_deterministic_audit() -> None:
     assert f.must[0].match.any == ["alpha", "mu", "zeta"]
 
 
-def test_filter_with_empty_groups_still_constructs() -> None:
-    """An agent with no groups gets a filter that matches no points
-    (zero results) — never None / never absent."""
-    f = build_classification_filter(frozenset())
-    assert isinstance(f, Filter)
-    assert f.must[0].match.any == []
+def test_no_groups_refuses_to_build_a_filter_at_all() -> None:
+    """It used to build `MatchAny(any=[])` and trust Qdrant to match nothing.
+
+    That is Qdrant's reading of an empty list, not a guarantee, and the cost
+    of being wrong about it once is every passage in the collection. Nothing
+    reaches here in practice — a caller with no groups has no orgs, so the
+    search returns before a collection is opened — so raising costs nothing
+    and removes the assumption (arch's review, hub #16893).
+    """
+    with pytest.raises(EmptyGroupSet):
+        build_classification_filter(frozenset())
+
+
+async def test_a_caller_with_no_groups_opens_no_collection() -> None:
+    """The guard above is never reached, and this is why."""
+    backend = AsyncMock()
+    client = _client(backend)
+
+    found = await client.search([0.1] * 4, {}, limit=10)
+
+    assert found.hits == []
+    assert found.collections == []
+    backend.query_points.assert_not_called()
 
 
 def test_filter_with_single_group() -> None:
@@ -121,7 +145,7 @@ async def test_search_passes_built_filter_to_backend() -> None:
     backend.query_points.return_value = _response([])
     client = _client(backend)
 
-    await client.search([0.1] * 4, frozenset({"g1", "g2"}), ORGS, limit=5)
+    await client.search([0.1] * 4, by_org(frozenset({"g1", "g2"})), limit=5)
 
     backend.query_points.assert_awaited_once()
     kwargs = backend.query_points.await_args.kwargs
@@ -145,7 +169,7 @@ async def test_search_does_not_call_legacy_search_method() -> None:
     backend.query_points.return_value = _response([])
     client = _client(backend)
 
-    await client.search([0.1] * 4, frozenset({"g"}), ORGS, limit=5)
+    await client.search([0.1] * 4, by_org(frozenset({"g"})), limit=5)
 
     backend.query_points.assert_awaited_once()
     backend.search.assert_not_called()
@@ -173,7 +197,7 @@ async def test_search_projects_payload_to_qdrant_hit() -> None:
     )
     client = _client(backend)
 
-    found = await client.search([0.1] * 4, frozenset({"arc_g0"}), ORGS, limit=10)
+    found = await client.search([0.1] * 4, by_org(frozenset({"arc_g0"})), limit=10)
     hits, elapsed_ms = found.hits, found.elapsed_ms
 
     assert len(hits) == 1
@@ -195,7 +219,7 @@ async def test_search_handles_minimal_payload() -> None:
     )
     client = _client(backend)
 
-    found = await client.search([0.1] * 4, frozenset({"g_min"}), ORGS, limit=10)
+    found = await client.search([0.1] * 4, by_org(frozenset({"g_min"})), limit=10)
     hits = found.hits
 
     assert hits[0].source_path_rel is None
@@ -219,12 +243,12 @@ async def test_a_point_missing_text_is_dropped_and_counted() -> None:
     )
     client = _client(backend)
 
-    found = await client.search([0.1] * 4, frozenset({"g_eng"}), ORGS, limit=10)
+    found = await client.search([0.1] * 4, by_org(frozenset({"g_eng"})), limit=10)
 
     assert [h.text for h in found.hits] == ["fine"], "the good passage still comes back"
     assert len(found.dropped) == 1
-    assert "missing 'text'" in found.dropped[0]
-    assert "documents" in found.dropped[0], "the collection is named"
+    assert found.dropped[0][0] == "documents", "the collection is named"
+    assert "missing 'text'" in found.dropped[0][1]
 
 
 async def test_a_point_missing_classification_group_is_dropped_and_counted() -> None:
@@ -233,11 +257,11 @@ async def test_a_point_missing_classification_group_is_dropped_and_counted() -> 
     backend.query_points.return_value = _response([_point({"text": "orphan chunk"})])
     client = _client(backend)
 
-    found = await client.search([0.1] * 4, frozenset({"g"}), ORGS, limit=10)
+    found = await client.search([0.1] * 4, by_org(frozenset({"g"})), limit=10)
 
     assert found.hits == []
     assert len(found.dropped) == 1
-    assert "missing 'classification_group'" in found.dropped[0]
+    assert "missing 'classification_group'" in found.dropped[0][1]
 
 
 async def test_a_point_with_empty_text_is_dropped_and_counted() -> None:
@@ -247,7 +271,7 @@ async def test_a_point_with_empty_text_is_dropped_and_counted() -> None:
     )
     client = _client(backend)
 
-    found = await client.search([0.1] * 4, frozenset({"g"}), ORGS, limit=10)
+    found = await client.search([0.1] * 4, by_org(frozenset({"g"})), limit=10)
 
     assert found.hits == []
     assert len(found.dropped) == 1
@@ -261,7 +285,7 @@ async def test_a_healthy_collection_drops_nothing() -> None:
     )
     client = _client(backend)
 
-    found = await client.search([0.1] * 4, frozenset({"g"}), ORGS, limit=10)
+    found = await client.search([0.1] * 4, by_org(frozenset({"g"})), limit=10)
 
     assert found.dropped == []
 
@@ -279,7 +303,7 @@ async def test_search_rejects_response_without_points_attribute() -> None:
     client = _client(backend)
 
     with pytest.raises(QdrantUnavailable, match="missing 'points'"):
-        await client.search([0.1] * 4, frozenset({"g"}), ORGS, limit=10)
+        await client.search([0.1] * 4, by_org(frozenset({"g"})), limit=10)
 
 
 async def test_search_timeout_raises_qdrant_timeout() -> None:
@@ -288,7 +312,7 @@ async def test_search_timeout_raises_qdrant_timeout() -> None:
     client = _client(backend)
 
     with pytest.raises(QdrantTimeout, match="timed out"):
-        await client.search([0.1] * 4, frozenset({"g"}), ORGS, limit=10)
+        await client.search([0.1] * 4, by_org(frozenset({"g"})), limit=10)
 
 
 async def test_search_unexpected_response_raises_unavailable() -> None:
@@ -299,7 +323,7 @@ async def test_search_unexpected_response_raises_unavailable() -> None:
     client = _client(backend)
 
     with pytest.raises(QdrantUnavailable, match="status 503"):
-        await client.search([0.1] * 4, frozenset({"g"}), ORGS, limit=10)
+        await client.search([0.1] * 4, by_org(frozenset({"g"})), limit=10)
 
 
 async def test_search_response_handling_error_raises_unavailable() -> None:
@@ -308,7 +332,7 @@ async def test_search_response_handling_error_raises_unavailable() -> None:
     client = _client(backend)
 
     with pytest.raises(QdrantUnavailable, match="response error"):
-        await client.search([0.1] * 4, frozenset({"g"}), ORGS, limit=10)
+        await client.search([0.1] * 4, by_org(frozenset({"g"})), limit=10)
 
 
 async def test_search_unknown_exception_wrapped_as_unavailable() -> None:
@@ -317,7 +341,7 @@ async def test_search_unknown_exception_wrapped_as_unavailable() -> None:
     client = _client(backend)
 
     with pytest.raises(QdrantUnavailable, match="ConnectionError"):
-        await client.search([0.1] * 4, frozenset({"g"}), ORGS, limit=10)
+        await client.search([0.1] * 4, by_org(frozenset({"g"})), limit=10)
 
 
 async def test_search_empty_results_returns_empty_list() -> None:
@@ -325,7 +349,7 @@ async def test_search_empty_results_returns_empty_list() -> None:
     backend.query_points.return_value = _response([])
     client = _client(backend)
 
-    found = await client.search([0.1] * 4, frozenset({"g"}), ORGS, limit=10)
+    found = await client.search([0.1] * 4, by_org(frozenset({"g"})), limit=10)
     hits = found.hits
     assert hits == []
 

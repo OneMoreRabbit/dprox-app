@@ -17,7 +17,12 @@ from click.testing import CliRunner
 from dprox_query import cli as cli_mod
 from dprox_query import client as client_mod
 from dprox_query.cli import cli
-from dprox_query.config import ConfigError, load_config, missing_files
+from dprox_query.config import (
+    ConfigError,
+    load_config,
+    missing_files,
+    unsafe_key_mode,
+)
 from dprox_query.version import UnreadableVersion, parse_version, supports
 
 # --- fixtures -----------------------------------------------------------------
@@ -30,6 +35,9 @@ def cert_files(tmp_path: Path) -> dict[str, Path]:
         path = tmp_path / name
         path.write_text("not a real certificate", encoding="utf-8")
         files[name] = path
+    # The key is this caller's whole identity for search, so the tool refuses
+    # one anyone else can read. The estate places it 0600.
+    files["client.key"].chmod(0o600)
     return files
 
 
@@ -444,3 +452,50 @@ def test_nothing_is_said_when_nothing_was_dropped(
     result = _run(["ask", "x"], monkeypatch, handler, config_file)
 
     assert "could not be read" not in result.output
+
+
+def test_a_key_anyone_can_read_is_refused(
+    monkeypatch, config_file: Path, cert_files: dict[str, Path]
+) -> None:
+    """The key is the whole identity, so a mode nobody checks is not enough."""
+    cert_files["client.key"].chmod(0o644)
+    monkeypatch.setenv("DPROX_QUERY_CONFIG", str(config_file))
+
+    result = CliRunner().invoke(cli, ["ask", "x"])
+
+    assert result.exit_code == 2
+    assert "readable by someone other than its owner" in result.output
+    assert "chmod 600" in result.output
+
+
+def test_a_key_only_its_owner_can_read_is_accepted(
+    config_file: Path, cert_files: dict[str, Path]
+) -> None:
+    cert_files["client.key"].chmod(0o600)
+    assert unsafe_key_mode(load_config(config_file)) is None
+
+
+def test_the_ssl_context_verifies_the_server(
+    config_file: Path, monkeypatch
+) -> None:
+    """Verification and hostname checking are on, and there is no flag to stop them."""
+    import ssl
+
+    captured: dict = {}
+    real_context = ssl.create_default_context
+
+    def fake_context(cafile=None):
+        # The real thing, minus loading key material the fixture does not have.
+        ctx = real_context()
+        captured["cafile"] = cafile
+        ctx.load_cert_chain = lambda **kwargs: captured.update(kwargs)
+        return ctx
+
+    monkeypatch.setattr(client_mod.ssl, "create_default_context", fake_context)
+    ctx = client_mod.build_ssl_context(load_config(config_file))
+
+    assert ctx.verify_mode == ssl.CERT_REQUIRED
+    assert ctx.check_hostname is True
+    assert captured["cafile"].endswith("ca.crt")
+    assert captured["certfile"].endswith("client.crt")
+    assert captured["keyfile"].endswith("client.key")

@@ -111,7 +111,11 @@ def test_query_logs_query_text_when_log_query_text_enabled(
 
     e = _events_of_type(logs, "query")[0]
     assert e["query_text"] == "verbose-query-text"
-    assert e["log_level"] == "debug"
+    # At INFO, not DEBUG. The flag adds the text to the event; it does not
+    # move the event. Logging it at DEBUG meant that turning the text on at
+    # the usual INFO level deleted the whole event, which is the opposite of
+    # what someone turning it on wants (arch's review, hub #16893).
+    assert e["log_level"] == "info"
 
 
 # --- query_failed event ------------------------------------------------------

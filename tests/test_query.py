@@ -334,7 +334,12 @@ def test_query_when_plan_reload_fails_returns_502(
     assert response.status_code == 502
     body = response.json()
     assert body["error"] == "upstream_unavailable"
-    assert "simulated" in body["message"]
+    # A FIXED message. PlanError text names other principals, their groups and
+    # the plan's path, and the plan has to be read before this CN is known to
+    # be in it — so any certificate the CA signed could read it out of a 502
+    # body (arch's review, hub #16893). The detail goes to the audit log.
+    assert body["message"] == "the access plan could not be read"
+    assert "simulated" not in body["message"]
 
 
 def test_query_when_ollama_times_out_returns_504(

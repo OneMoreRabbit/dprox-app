@@ -259,22 +259,30 @@ def test_cache_reloads_on_mtime_change(plan_yaml: Path, baseline_config) -> None
     assert new_entry.groups == frozenset({"g_new"})
 
 
-def test_cache_no_reload_when_mtime_unchanged(
+def test_a_rewrite_with_the_mtime_put_back_is_still_noticed(
     plan_yaml: Path, baseline_config_dict: dict
 ) -> None:
-    """Disable the unknown-CN reload path so we isolate the mtime-only behavior."""
+    """Staleness is (mtime_ns, inode, size), not mtime.
+
+    This test used to assert the opposite — that restoring the mtime hid the
+    change — which was true and was the defect. The estate renames a new file
+    over this one, so the inode moves; and a whole-second mtime can repeat
+    inside the second two writes land in (arch's review, hub #16893).
+    """
     baseline_config_dict["plan"]["reload_on_unknown_cn"] = False
     from dprox.config import Config
 
     config = Config.model_validate(baseline_config_dict)
     cache = PlanCache(config.plan)
     cache.initial_load()
+    assert cache.lookup("agent_alice") is not None
 
-    # Modify the file in place but keep the original mtime — cache should not see the change.
     original_stat = plan_yaml.stat()
     plan_yaml.write_text(
         yaml.safe_dump(
-            _with_groups({"agent_users": [{"name": "agent_only_here_now", "groups": ["g"]}]})
+            _with_groups(
+                {"agent_users": [{"name": "agent_only_here_now", "groups": ["g_engineering"]}]}
+            )
         ),
         encoding="utf-8",
     )
@@ -282,17 +290,38 @@ def test_cache_no_reload_when_mtime_unchanged(
 
     os.utime(plan_yaml, (original_stat.st_atime, original_stat.st_mtime))
 
-    # Old agents still resolve from cache; the new one is invisible.
-    assert cache.lookup("agent_alice") is not None
-    assert cache.lookup("agent_only_here_now") is None
+    # Seen anyway: the size changed even though the mtime did not.
+    assert cache.lookup("agent_only_here_now") is not None
+    assert cache.lookup("agent_alice") is None, "the new plan is the whole plan"
+
+
+def test_an_identical_rewrite_is_not_a_reload(
+    plan_yaml: Path, baseline_config_dict: dict
+) -> None:
+    """The check still has to be quiet when nothing changed, or it is useless."""
+    from dprox.config import Config
+
+    config = Config.model_validate(baseline_config_dict)
+    cache = PlanCache(config.plan)
+    cache.initial_load()
+
+    before = cache.lookup("agent_alice")
+    assert before is not None
+    # Same bytes, same inode, same mtime: nothing to notice.
+    assert cache.lookup("agent_alice") is before
 
 
 # --- PlanCache: unknown-CN reload + rate limit --------------------------------
 
 
 def test_cache_reloads_on_unknown_cn(plan_yaml: Path, baseline_config_dict: dict) -> None:
-    """If reload_on_mtime_change is off, the unknown-CN path is the only reload trigger."""
-    baseline_config_dict["plan"]["reload_on_mtime_change"] = False
+    """The unknown-CN path on its own, with the file looking unchanged.
+
+    `reload_on_mtime_change: false` with the cache on is refused in config now
+    (it would stop revocation until restart), so the staleness check is stubbed
+    out instead: this is a filesystem that did not notice, which is the case
+    the unknown-CN path exists for.
+    """
     baseline_config_dict["plan"]["reload_on_unknown_cn"] = True
     baseline_config_dict["plan"]["reload_min_interval_seconds"] = 0
     from dprox.config import Config
@@ -300,6 +329,7 @@ def test_cache_reloads_on_unknown_cn(plan_yaml: Path, baseline_config_dict: dict
     config = Config.model_validate(baseline_config_dict)
     cache = PlanCache(config.plan)
     cache.initial_load()
+    cache._changed_locked = lambda: False  # type: ignore[method-assign]
 
     # Add a new agent to disk, but mtime checks are off so it'd stay invisible
     # except for the unknown-CN reload path.
@@ -321,7 +351,6 @@ def test_unknown_cn_reload_is_rate_limited(
     plan_yaml: Path, baseline_config_dict: dict
 ) -> None:
     """A flood of unknown CNs must not reload the plan on every miss."""
-    baseline_config_dict["plan"]["reload_on_mtime_change"] = False
     baseline_config_dict["plan"]["reload_on_unknown_cn"] = True
     baseline_config_dict["plan"]["reload_min_interval_seconds"] = 60
     from dprox.config import Config
@@ -329,6 +358,9 @@ def test_unknown_cn_reload_is_rate_limited(
     config = Config.model_validate(baseline_config_dict)
     cache = PlanCache(config.plan)
     cache.initial_load()
+    # Isolate the rate limit: with the staleness check live, the rewrite below
+    # is noticed by it and the unknown-CN path never gets a say.
+    cache._changed_locked = lambda: False  # type: ignore[method-assign]
 
     # First unknown lookup should trigger a reload.
     assert cache.lookup("agent_first_miss") is None

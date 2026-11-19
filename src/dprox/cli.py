@@ -111,8 +111,13 @@ def _format_ollama_line(status: dict[str, Any]) -> tuple[str, bool]:
     """Format the [OK]/[FAIL] line for the CLI. Returns (line, is_ok)."""
     endpoint = status["endpoint"]
     model = status["model"]
+    prefix = status.get("query_prefix")
+    shown = f"query_prefix={prefix!r}" if prefix else "query_prefix empty (declared)"
     if status["reachable"] and status["model_present"]:
-        return f"[OK]   ollama                   {endpoint} model={model}", True
+        return (
+            f"[OK]   ollama                   {endpoint} model={model} {shown}",
+            True,
+        )
     if not status["reachable"]:
         reason = status.get("error") or "unreachable"
         return (

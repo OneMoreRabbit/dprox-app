@@ -106,6 +106,9 @@ def _baseline_config_dict(tmp_path: Path, plan_path: Path) -> dict:
             "model": "nomic-embed-text",
             "vector_dim": 768,
             "timeout_seconds": 10,
+            # Required with no default, so every test config declares it.
+            # The trailing space is part of nomic-embed-text's prefix.
+            "query_prefix": "search_query: ",
         },
         "qdrant": {
             "url": "http://localhost:6333",
@@ -240,3 +243,91 @@ def mock_qdrant(baseline_config: Config, mock_qdrant_backend) -> QdrantClient:
         baseline_config.embedding.vector_dim,
         backend=mock_qdrant_backend,
     )
+
+
+# --- two orgs: one dprox answering both (v0.3.0) -----------------------------
+
+
+@pytest.fixture
+def two_org_plan(tmp_path: Path) -> Path:
+    """A plan where one caller reads one org and another reads both.
+
+    `agent_both`'s two groups belong to different orgs, which is the case the
+    design says could not be configured before: an agent had one dprox address,
+    so it had one org.
+    """
+    target = tmp_path / "two_org_plan.yml"
+    target.write_text(
+        textwrap.dedent(
+            """
+            meta:
+              compiled_at: '2026-01-01T00:00:00Z'
+              compiler_version: 0.7.3
+              schema_version: '0.11'
+            required_groups:
+            - arc_g1_eng
+            - job_g1_eng
+            groups:
+            - name: arc_g1_eng
+              org: arc
+              grade: g1
+              vertical: engineering
+              scope: all
+            - name: job_g1_eng
+              org: job
+              grade: g1
+              vertical: engineering
+              scope: all
+            agent_users:
+            - name: agent_arc
+              groups:
+              - arc_g1_eng
+            - name: agent_both
+              groups:
+              - arc_g1_eng
+              - job_g1_eng
+            admin_users: []
+            """
+        ).lstrip(),
+        encoding="utf-8",
+    )
+    return target
+
+
+@pytest.fixture
+def two_org_config(baseline_config_dict: dict, two_org_plan: Path) -> Config:
+    data = dict(baseline_config_dict)
+    data["plan"] = dict(data["plan"], compiled_plan_path=str(two_org_plan))
+    data["qdrant"] = dict(
+        data["qdrant"], collections={"arc": "arc_documents", "job": "job_documents"}
+    )
+    return Config.model_validate(data)
+
+
+@pytest.fixture
+def two_org_plan_cache(two_org_config: Config) -> PlanCache:
+    cache = PlanCache(two_org_config.plan)
+    cache.initial_load()
+    return cache
+
+@pytest.fixture
+def two_org_config_one_collection(two_org_config, mock_qdrant_backend):
+    """A caller whose plan grants two orgs, against a dprox that has one.
+
+    The deployment fault behind the 502 in `dprox-design-spec-v0_3` §2.3.
+    """
+    from dprox.qdrant import QdrantClient
+
+    config = Config.model_validate(
+        {
+            **two_org_config.model_dump(mode="json"),
+            "qdrant": {
+                **two_org_config.qdrant.model_dump(mode="json"),
+                "collections": {"arc": "arc_documents"},
+            },
+        }
+    )
+    qdrant = QdrantClient(
+        config.qdrant, config.embedding.vector_dim, backend=mock_qdrant_backend
+    )
+    return config, qdrant

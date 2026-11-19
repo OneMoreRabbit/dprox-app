@@ -1,7 +1,7 @@
 ---
 title: Release notes — dprox-app
 status: active
-updated: 2026-11-18
+updated: 2026-11-19
 owner: agent-eco.component.dprox
 about: one short entry per release, newest first — what changed and what anyone must do about it
 ---
@@ -13,7 +13,7 @@ Every built version gets a line under **Built, not yet released**; when it is
 tagged on `main` those lines become the tag's entry, with TL;DR and Action, in
 the tagging commit.
 
-## v0.3.0 — 2026-11-18 (built, not yet released)
+## v0.3.0 — 2026-11-19 (built, not yet released)
 
 **TL;DR:** one dprox answers every org, and there is a search command,
 `dprox-query`, for seats and OpenClaw agents. **Breaking for deployment:**
@@ -69,6 +69,47 @@ plan must carry `groups[]`.
   works with — 0.3.0 up to but not including 0.4.0 — and checks before every
   question, not only in `dprox-query check`.
 
+- **`embedding.query_prefix`, required, no default, empty string a real
+  choice.** Put in front of every question before it is embedded, and it must
+  match what the collection was indexed with — nothing can check that it
+  does, because a wrong prefix does not fail, it lowers every score. dprox has
+  never applied one; that was symmetric with ingstr, which does not either, so
+  retrieval degraded rather than broke. `nomic-embed-text` wants
+  `"search_query: "` with the trailing space; `bge-m3` wants `""`.
+  (Operator's model choice, arch 2026-11-19.)
+- **Fixes from arch's review of the release** (hub #16893):
+  - a plan fault no longer puts the plan's own text in a 502 body. The plan
+    must be read to find out whether a CN is in it, so that path runs before
+    the caller is known to be one: any certificate the CA signed could read
+    out the names of other principals, their groups and the plan's path. The
+    caller now gets a fixed sentence and the operator gets the detail.
+  - a caller refused for an unconfigured org is no longer told which orgs
+    dprox does serve.
+  - **each collection is now searched with only its own org's groups**, and
+    every hit is checked again against them. One filter of all the caller's
+    groups went to every collection, so a passage misfiled into another org's
+    collection came back labelled with the wrong org. The two checks are now
+    independent, which is what the design claims for them.
+  - `/healthz` goes degraded when the plan stops loading. `loaded` stayed true
+    from the last success, so health said ok while every query got a 502.
+  - the body limit **stops reading at the limit** instead of measuring a body
+    already in memory. It runs before the route and the listener accepts a
+    peer with no certificate, so anyone who can reach the port could send a
+    chunked multi-gigabyte body.
+  - `plan.cache_enabled` with `plan.reload_on_mtime_change` false is refused:
+    it never re-reads the plan, so removing a caller's group would not take
+    effect until restart — the one revocation the design promises is
+    immediate. Staleness is now `(mtime_ns, inode, size)`, not mtime alone,
+    because the estate renames a new file over the old one.
+  - `build_classification_filter` refuses an empty group set rather than
+    building `MatchAny(any=[])` and trusting Qdrant to match nothing.
+  - one `passage_dropped` warning per collection per query, with a count,
+    rather than one per passage.
+  - the `query` audit event is always at INFO. Turning `log_query_text` on at
+    the usual level used to delete the whole event.
+  - `dprox-query` builds an `ssl.SSLContext` (httpx 0.28) and refuses a
+    private key that anyone but its owner can read.
+
 **Action — the estate, before rolling the image:**
 
 1. Rewrite `config.yml`. Remove the top-level `org:`. Replace
@@ -79,7 +120,12 @@ plan must carry `groups[]`.
      collections:
        arc: arc_documents
        job: job_documents
+   embedding:
+     query_prefix: "search_query: "   # required; "" is a real choice
    ```
+
+   `plan.cache_enabled: true` with `plan.reload_on_mtime_change: false` is
+   now refused at startup, so check the deployed file does not have it.
 
    Both old keys fail at startup rather than being ignored, because the schema
    forbids unknown keys. `examples/config.example.yml` is the full shape.

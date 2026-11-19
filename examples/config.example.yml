@@ -41,6 +41,19 @@ embedding:
   model: nomic-embed-text
   vector_dim: 768
   timeout_seconds: 10
+  # REQUIRED, no default. Put in front of every question before it is
+  # embedded, and it must match what the collection was indexed with.
+  # Nothing can check that it does — a wrong prefix does not fail, it just
+  # lowers every score — so it is declared or dprox does not start.
+  #
+  # An empty string is a real choice, meaning "this model wants no prefix":
+  #   nomic-embed-text   "search_query: "   (the trailing space is part of it)
+  #   bge-m3             ""
+  #   qwen3-embedding    an instruction line on the query, none on documents
+  #
+  # Changing this changes every score, so change it with the model and the
+  # re-index, never on its own.
+  query_prefix: "search_query: "
 
 # Qdrant (read-only access). One server, one collection for each org.
 qdrant:

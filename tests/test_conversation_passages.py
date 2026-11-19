@@ -19,7 +19,7 @@ from dprox.server import _hit_to_dict
 
 TURN = {
     "text": "we agreed to rebuild the seat",
-    "classification_group": "arc_g1_eng",
+    "classification_group": "g_engineering",
     "source_path_rel": "agents/claude/sessions/48ed.jsonl",
     "source_path": "/mnt/data/agents/claude/sessions/48ed.jsonl",
     "file_type": CONVERSATION_FILE_TYPE,
@@ -37,7 +37,7 @@ TURN = {
 
 DOCUMENT = {
     "text": "the wage policy is this",
-    "classification_group": "arc_g1_eng",
+    "classification_group": "g_engineering",
     "source_path_rel": "hr/wages.docx",
     "file_type": "docx",
     "chunk_index": 1,
@@ -171,10 +171,11 @@ def test_one_bad_passage_does_not_fail_the_search(
 
     # And the fault is named in the audit log, once, at warning level.
     dropped = [e for e in logs if e.get("event") == "passage_dropped"]
-    assert len(dropped) == 1
+    assert len(dropped) == 1, "one warning per collection, not one per passage"
     assert dropped[0]["log_level"] == "warning"
-    assert "role" in dropped[0]["reason"]
-    assert "documents" in dropped[0]["reason"]
+    assert dropped[0]["collection"] == "documents"
+    assert dropped[0]["dropped"] == 1
+    assert "role" in dropped[0]["example"]
 
     query_events = [e for e in logs if e.get("event") == "query"]
     assert query_events[-1]["dropped_count"] == 1

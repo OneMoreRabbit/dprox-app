@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import os
 import time
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -136,7 +137,11 @@ class SearchResult:
     hits: list[QdrantHit]
     elapsed_ms: int
     collections: list[str]
-    dropped: list[str]
+    dropped: list[tuple[str, str]]
+    """(collection, why) for each passage thrown away. Paired with its
+    collection so the warning can be one line per collection rather than one
+    per passage: a collection rebuilt wrongly would otherwise write `limit`
+    identical warnings for every query (arch's review, hub #16893)."""
 
 
 REQUIRED_DISTANCE = "cosine"
@@ -144,6 +149,17 @@ REQUIRED_DISTANCE = "cosine"
 search with. A collection built with another is written happily by ingstr and
 searched wrongly by dprox, with no error anywhere — the contract says ingstr
 cannot check this, so dprox does."""
+
+
+class EmptyGroupSet(QdrantError):
+    """build_classification_filter was given no groups.
+
+    Reaching it is a bug upstream — a caller with no groups has no orgs, so
+    the search returns before any collection is opened. It raises rather than
+    building a filter, because "a filter that matches nothing" would mean
+    trusting Qdrant's reading of ``MatchAny(any=[])``, and the cost of being
+    wrong about that once is every passage in the collection.
+    """
 
 
 def build_classification_filter(groups: frozenset[str]) -> Filter:
@@ -156,6 +172,10 @@ def build_classification_filter(groups: frozenset[str]) -> Filter:
 
     Sorting the group list makes audit log diffs deterministic.
     """
+    if not groups:
+        raise EmptyGroupSet(
+            "refusing to build a classification filter with no groups"
+        )
     return Filter(
         must=[
             FieldCondition(
@@ -211,7 +231,7 @@ class QdrantClient:
         """org name -> collection name, as the estate declared it."""
         return dict(self._config.collections)
 
-    def targets_for(self, orgs: frozenset[str]) -> list[tuple[str, str]]:
+    def targets_for(self, orgs: Iterable[str]) -> list[tuple[str, str]]:
         """CHECK ONE OF TWO: which collections this caller may be searched in.
 
         Returns (org, collection) pairs, sorted by org so an audit line and a
@@ -225,10 +245,12 @@ class QdrantClient:
         """
         missing = sorted(o for o in orgs if o not in self._config.collections)
         if missing:
+            # The message names only the caller's own orgs. Listing the orgs
+            # dprox serves would tell a refused caller the shape of the estate
+            # (arch's review, hub #16893); the operator reads that from the
+            # audit log and from `dprox health`, not from a 502 body.
             raise QdrantOrgNotConfigured(
-                f"caller holds group(s) in org(s) {', '.join(missing)}, which "
-                f"qdrant.collections does not name; configured orgs are "
-                f"{', '.join(sorted(self._config.collections))}"
+                f"no collection is configured for org(s): {', '.join(missing)}"
             )
         return sorted((o, self._config.collections[o]) for o in orgs)
 
@@ -249,15 +271,26 @@ class QdrantClient:
     async def search(
         self,
         query_vector: list[float],
-        groups: frozenset[str],
-        orgs: frozenset[str],
+        groups_by_org: Mapping[str, frozenset[str]],
         limit: int,
     ) -> SearchResult:
         """Run the RBAC-filtered search.
 
-        Both checks are here, and they are independent. ``orgs`` chooses the
-        collections; ``groups`` builds the filter applied inside every one of
-        them. If either is wrong the other still holds.
+        ``groups_by_org`` is the caller's groups split by the org each belongs
+        to, from the plan. One argument rather than two because an org and the
+        groups searched inside it must come from the same place: passing them
+        separately made it possible — and it happened — to send every group to
+        every collection.
+
+        **The two checks, and why they are independent.** The keys choose the
+        collections. Inside each collection the filter carries **only that
+        org's groups**, not all of the caller's. So a passage written into the
+        wrong org's collection is not returned even when the caller holds its
+        group, where before it came back labelled with the wrong org. Then
+        every hit is checked again against the caller's whole group set, which
+        catches a Qdrant filter that did not do what it was asked. Three
+        chances to be right, each able to survive the others being wrong
+        (arch's review, hub #16893).
 
         Each collection is asked for ``limit`` results and the merged list is
         cut back to ``limit``, which gives the same answer as one collection
@@ -279,34 +312,58 @@ class QdrantClient:
         Raises QdrantTimeout on timeout, QdrantOrgNotConfigured when an org
         has no collection, QdrantUnavailable on every other failure.
         """
-        targets = self.targets_for(orgs)
+        targets = self.targets_for(groups_by_org)
         collections = [c for _, c in targets]
         if not targets:
-            # No orgs means no groups, which the filter would fail closed on
-            # anyway. Nothing is searched and the audit line says so.
+            # No orgs means no groups. Nothing is searched, nothing is built,
+            # and the audit line says so.
             return SearchResult(hits=[], elapsed_ms=0, collections=[], dropped=[])
 
-        q_filter = build_classification_filter(groups)
         start = time.monotonic()
         results = await asyncio.gather(
             *(
-                self._search_one(collection, query_vector, q_filter, limit)
-                for collection in collections
+                self._search_one(
+                    collection,
+                    query_vector,
+                    build_classification_filter(groups_by_org[org]),
+                    limit,
+                )
+                for org, collection in targets
             ),
             return_exceptions=True,
         )
         elapsed_ms = int((time.monotonic() - start) * 1000)
 
         hits: list[QdrantHit] = []
-        dropped: list[str] = []
+        dropped: list[tuple[str, str]] = []
         for (org, collection), result in zip(targets, results, strict=True):
             if isinstance(result, BaseException):
                 raise result
             for point in result:
                 try:
-                    hits.append(self._point_to_hit(point, org))
+                    hit = self._point_to_hit(point, org)
                 except MalformedPassage as exc:
-                    dropped.append(f"{collection}: {exc}")
+                    dropped.append((collection, str(exc)))
+                    continue
+                # The second check again, on what came back, and against THIS
+                # org's groups rather than all the caller's. Arch asked for the
+                # caller's whole set; per collection is strictly stronger and
+                # catches one more fault: a passage of org B sitting in org A's
+                # collection, whose group the caller does happen to hold. The
+                # weaker check would pass it and dprox would return it saying
+                # org A. Reaching here at all means Qdrant returned a passage
+                # its filter did not ask for.
+                if hit.classification_group not in groups_by_org[org]:
+                    dropped.append(
+                        (
+                            collection,
+                            f"point with group {hit.classification_group!r}, "
+                            f"which is not a group of org {org!r} that was "
+                            f"asked for — the filter and the index disagree",
+                        )
+                    )
+                    continue
+                hits.append(hit)
 
         # Highest score first; org, path and passage number break ties so two
         # runs of the same query return the same order.

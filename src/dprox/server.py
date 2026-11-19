@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from dprox.audit import audit_reason_for_auth_failure, get_audit_logger
+from dprox.bodylimit import BodyLimitMiddleware
 from dprox.config import Config
 from dprox.mtls import AuthFailure, auth_failure_to_dict, require_mtls
 from dprox.ollama import OllamaClient, OllamaTimeout, OllamaUnavailable
@@ -40,27 +41,22 @@ class QueryRequest(BaseModel):
     limit: int | None = None
 
 
-def _body_too_large(request: Request, size: int, limit: int) -> JSONResponse:
-    """413 for an oversize body, audited as its own event.
+def _audit_body_too_large(scope: dict, size: int, limit: int) -> None:
+    """Audit an oversize body. Called by BodyLimitMiddleware.
 
-    Fires before identity is resolved, so there is no agent entry to name.
-    The CN and cert serial are recorded when the peer cert has already been
-    validated, matching ``auth_rejected``'s shape; both are null otherwise.
+    It runs before the route, so no identity exists: the CN is resolved by a
+    dependency that has not run, and the listener accepts a peer with no
+    certificate at all. The client address is all there is to record, and
+    saying that plainly is better than a `cn` field that is always null.
     """
+    client = scope.get("client")
     get_audit_logger().info(
         "request_rejected",
         reason="body_too_large",
         body_bytes=size,
         limit_bytes=limit,
-        cn=getattr(request.state, "cn", None),
-        cert_serial=getattr(request.state, "cert_serial", None),
-        remote_addr=_remote_addr(request),
-        path=request.url.path,
-    )
-    return _error_response(
-        413,
-        "request_too_large",
-        f"request body is {size} bytes; the limit is {limit}",
+        remote_addr=client[0] if client else None,
+        path=scope.get("path"),
     )
 
 
@@ -135,6 +131,14 @@ def _hit_to_dict(h: QdrantHit) -> dict[str, Any]:
     }
 
 
+def _group_drops(dropped: list[tuple[str, str]]) -> list[tuple[str, int, str]]:
+    """(collection, how many, the first reason) — one row per collection."""
+    grouped: dict[str, list[str]] = {}
+    for collection, reason in dropped:
+        grouped.setdefault(collection, []).append(reason)
+    return [(c, len(rs), rs[0]) for c, rs in grouped.items()]
+
+
 def _remote_addr(request: Request) -> str | None:
     """Best-effort client IP for audit logging."""
     client = request.client
@@ -179,35 +183,14 @@ def create_app(
 
     app = FastAPI(title="dprox", version=__version__, lifespan=lifespan)
 
-    @app.middleware("http")
-    async def _limit_body(request: Request, call_next):
-        """Refuse an oversize request body BEFORE anything parses it.
-
-        Runs as middleware, not a dependency, so the body is never handed to
-        JSON parsing or ``QueryRequest``: an oversize request costs a read and
-        a 413, not a parse. The limit is ``server.max_body_bytes``, which is
-        required in config — dprox does not start without it.
-
-        Both paths are checked. ``Content-Length`` is a fast reject when the
-        client declares the size, but it is a claim: it can be absent (chunked
-        transfer) or wrong. So the body is also measured as it is read, and the
-        declared length is never trusted on its own.
-        """
-        limit = request.app.state.config.server.max_body_bytes
-
-        declared = request.headers.get("content-length")
-        if declared is not None:
-            try:
-                if int(declared) > limit:
-                    return _body_too_large(request, int(declared), limit)
-            except ValueError:
-                pass  # unparseable header: fall through and measure the body
-
-        body = await request.body()
-        if len(body) > limit:
-            return _body_too_large(request, len(body), limit)
-
-        return await call_next(request)
+    # Pure ASGI, and added last so it runs FIRST: it must stop reading an
+    # oversize body rather than measure one already in memory. See
+    # dprox/bodylimit.py for why that cannot be a FastAPI http middleware.
+    app.add_middleware(
+        BodyLimitMiddleware,
+        limit=config.server.max_body_bytes,
+        on_reject=_audit_body_too_large,
+    )
 
     app.state.config = config
     app.state.plan_cache = plan_cache
@@ -245,6 +228,9 @@ def create_app(
             "loaded": plan_cache.loaded,
             "agents": agent_count,
             "admins": admin_count,
+            # Why the last reload failed, so a degraded /healthz says what to
+            # fix. Null when the plan is fine.
+            "error": plan_cache.last_error,
         }
         ollama_check = await ollama.check_health()
         qdrant_check = await qdrant.check_health()
@@ -290,6 +276,12 @@ def create_app(
         try:
             entry = plan_cache.lookup(cn)
         except PlanError as exc:
+            # The plan has to be read to find out whether this CN is in it, so
+            # this runs before the caller is known to be a caller at all: any
+            # certificate the CA signed reaches here. PlanError text names
+            # other principals, their groups, the plan's path and YAML, so it
+            # goes to the audit log and a fixed sentence goes to the caller
+            # (arch's review, hub #16893).
             audit.info(
                 "query_failed",
                 agent=cn,
@@ -297,9 +289,12 @@ def create_app(
                 query_hash=query_hash,
                 error="upstream_unavailable",
                 error_class=exc.__class__.__name__,
+                detail=str(exc),
                 latency_ms=int((time.monotonic() - start_mono) * 1000),
             )
-            return _error_response(502, "upstream_unavailable", str(exc))
+            return _error_response(
+                502, "upstream_unavailable", "the access plan could not be read"
+            )
 
         if entry is None:
             audit.info(
@@ -362,15 +357,19 @@ def create_app(
         # inside each. Both come from the plan via the verified cert CN; no
         # part of the request body reaches either (spec §3.4).
         try:
-            found = await qdrant.search(vector, entry.groups, entry.orgs, limit)
+            found = await qdrant.search(vector, entry.groups_by_org, limit)
             hits = found.hits
             qdrant_ms = found.elapsed_ms
             collections_searched = found.collections
         except QdrantOrgNotConfigured as exc:
             # A deployment fault: the plan grants an org this dprox cannot
             # reach. Refused, because searching the rest would look complete.
+            # The message names only the caller's own orgs; which orgs dprox
+            # serves is not a refused caller's to learn.
             _audit_failure("upstream_unavailable", exc, ollama_ms=ollama_ms)
-            return _error_response(502, "upstream_unavailable", str(exc))
+            return _error_response(
+                502, "upstream_unavailable", "search is not configured for your org"
+            )
         except QdrantTimeout as exc:
             _audit_failure("upstream_timeout", exc, ollama_ms=ollama_ms)
             return _error_response(504, "upstream_timeout", str(exc))
@@ -380,15 +379,18 @@ def create_app(
 
         # --- 6. Audit + response ----------------------------------------------
         # A dropped passage is a defect in what was written, not in the query.
-        # It is logged once per passage at WARNING, naming the collection and
-        # what was missing, because it fires only when something is wrong and
-        # nothing else in the estate is watching for it.
-        for reason in found.dropped:
+        # ONE warning per collection per query, with the count and one example:
+        # a collection rebuilt wrongly drops the same way on every passage of
+        # every query, and a warning that repeats is a warning that gets
+        # learned into invisibility (constitution §9; arch's review #16893).
+        for collection, count, example in _group_drops(found.dropped):
             audit.warning(
                 "passage_dropped",
                 agent=entry.name,
                 query_hash=query_hash,
-                reason=reason,
+                collection=collection,
+                dropped=count,
+                example=example,
             )
 
         latency_ms = int((time.monotonic() - start_mono) * 1000)
@@ -407,12 +409,14 @@ def create_app(
             "ollama_ms": ollama_ms,
             "qdrant_ms": qdrant_ms,
         }
+        # One event per query, always at INFO. The flag adds the query text to
+        # it; it does not move the event to DEBUG. Logging it at DEBUG meant
+        # that turning the text ON at the usual INFO level deleted the whole
+        # event — the opposite of what someone turning it on wants
+        # (arch's review, hub #16893).
         if config.logging.log_query_text:
-            # Spec §9.1: full query text only at DEBUG when log_query_text is on.
             event_kwargs["query_text"] = req.query
-            audit.debug("query", **event_kwargs)
-        else:
-            audit.info("query", **event_kwargs)
+        audit.info("query", **event_kwargs)
 
         return JSONResponse(
             status_code=200,
