@@ -9,11 +9,18 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from dprox.audit import audit_reason_for_auth_failure, get_audit_logger
+from dprox.bodylimit import BodyLimitMiddleware
 from dprox.config import Config
 from dprox.mtls import AuthFailure, auth_failure_to_dict, require_mtls
 from dprox.ollama import OllamaClient, OllamaTimeout, OllamaUnavailable
 from dprox.plan import PlanCache, PlanError
-from dprox.qdrant import QdrantClient, QdrantHit, QdrantTimeout, QdrantUnavailable
+from dprox.qdrant import (
+    QdrantClient,
+    QdrantHit,
+    QdrantOrgNotConfigured,
+    QdrantTimeout,
+    QdrantUnavailable,
+)
 from dprox.version import IMAGE, __version__
 
 
@@ -32,6 +39,25 @@ class QueryRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     query: str = Field(min_length=1)
     limit: int | None = None
+
+
+def _audit_body_too_large(scope: dict, size: int, limit: int) -> None:
+    """Audit an oversize body. Called by BodyLimitMiddleware.
+
+    It runs before the route, so no identity exists: the CN is resolved by a
+    dependency that has not run, and the listener accepts a peer with no
+    certificate at all. The client address is all there is to record, and
+    saying that plainly is better than a `cn` field that is always null.
+    """
+    client = scope.get("client")
+    get_audit_logger().info(
+        "request_rejected",
+        reason="body_too_large",
+        body_bytes=size,
+        limit_bytes=limit,
+        remote_addr=client[0] if client else None,
+        path=scope.get("path"),
+    )
 
 
 def _error_response(status: int, code: str, message: str) -> JSONResponse:
@@ -76,13 +102,41 @@ def _hit_to_dict(h: QdrantHit) -> dict[str, Any]:
         "text": h.text,
         "classification_group": h.classification_group,
         "score": h.score,
+        # Which org the passage came from. Added in 0.3: a result list can
+        # now span orgs, and source_path_rel alone does not say which.
+        "org": h.org,
         "source_path_rel": h.source_path_rel,
         "file_type": h.file_type,
         "chunk_index": h.chunk_index,
         "chunk_total": h.chunk_total,
         "modified_at": h.modified_at,
         "indexed_at": h.indexed_at,
+        # Added in 0.3 for qdrant-collection-contract 0.4: a conversation
+        # passage is one turn, chunked so that a result is attributable. That
+        # only holds if the attribution reaches the caller. Null on a document
+        # passage, so the shape stays one shape.
+        "conversation": (
+            {
+                "agent": h.conversation.agent,
+                "runtime": h.conversation.runtime,
+                "conversation_id": h.conversation.conversation_id,
+                "turn_id": h.conversation.turn_id,
+                "role": h.conversation.role,
+                "turn_time": h.conversation.turn_time,
+                "sidechain": h.conversation.sidechain,
+            }
+            if h.conversation is not None
+            else None
+        ),
     }
+
+
+def _group_drops(dropped: list[tuple[str, str]]) -> list[tuple[str, int, str]]:
+    """(collection, how many, the first reason) — one row per collection."""
+    grouped: dict[str, list[str]] = {}
+    for collection, reason in dropped:
+        grouped.setdefault(collection, []).append(reason)
+    return [(c, len(rs), rs[0]) for c, rs in grouped.items()]
 
 
 def _remote_addr(request: Request) -> str | None:
@@ -128,6 +182,16 @@ def create_app(
                 await qdrant.aclose()
 
     app = FastAPI(title="dprox", version=__version__, lifespan=lifespan)
+
+    # Pure ASGI, and added last so it runs FIRST: it must stop reading an
+    # oversize body rather than measure one already in memory. See
+    # dprox/bodylimit.py for why that cannot be a FastAPI http middleware.
+    app.add_middleware(
+        BodyLimitMiddleware,
+        limit=config.server.max_body_bytes,
+        on_reject=_audit_body_too_large,
+    )
+
     app.state.config = config
     app.state.plan_cache = plan_cache
     app.state.ollama = ollama
@@ -164,6 +228,9 @@ def create_app(
             "loaded": plan_cache.loaded,
             "agents": agent_count,
             "admins": admin_count,
+            # Why the last reload failed, so a degraded /healthz says what to
+            # fix. Null when the plan is fine.
+            "error": plan_cache.last_error,
         }
         ollama_check = await ollama.check_health()
         qdrant_check = await qdrant.check_health()
@@ -172,14 +239,19 @@ def create_app(
             plan_check["loaded"]
             and ollama_check["reachable"]
             and ollama_check["model_present"]
+            # Every org's collection, not one of them: one bad collection
+            # makes this dprox wrong for that org and it must show here.
             and qdrant_check["reachable"]
-            and qdrant_check["collection_exists"]
-            and qdrant_check["vector_dim_matches"]
+            and qdrant_check["collections_exist"]
+            and qdrant_check["vector_dims_match"]
+            # A collection with the wrong metric returns wrongly ranked
+            # passages and no error, so it is degraded, not ok.
+            and qdrant_check["distances_match"]
         )
 
         body = {
             "status": "ok" if ok else "degraded",
-            "org": config.org,
+            "orgs": sorted(config.qdrant.collections),
             "checks": {
                 "plan": plan_check,
                 "ollama": ollama_check,
@@ -204,6 +276,12 @@ def create_app(
         try:
             entry = plan_cache.lookup(cn)
         except PlanError as exc:
+            # The plan has to be read to find out whether this CN is in it, so
+            # this runs before the caller is known to be a caller at all: any
+            # certificate the CA signed reaches here. PlanError text names
+            # other principals, their groups, the plan's path and YAML, so it
+            # goes to the audit log and a fixed sentence goes to the caller
+            # (arch's review, hub #16893).
             audit.info(
                 "query_failed",
                 agent=cn,
@@ -211,9 +289,12 @@ def create_app(
                 query_hash=query_hash,
                 error="upstream_unavailable",
                 error_class=exc.__class__.__name__,
+                detail=str(exc),
                 latency_ms=int((time.monotonic() - start_mono) * 1000),
             )
-            return _error_response(502, "upstream_unavailable", str(exc))
+            return _error_response(
+                502, "upstream_unavailable", "the access plan could not be read"
+            )
 
         if entry is None:
             audit.info(
@@ -240,12 +321,20 @@ def create_app(
             )
 
         groups_applied = sorted(entry.groups)
+        orgs_applied = sorted(entry.orgs)
 
-        def _audit_failure(error_code: str, exc: Exception, ollama_ms: int | None = None) -> None:
+        def _audit_failure(
+            error_code: str,
+            exc: Exception,
+            ollama_ms: int | None = None,
+            collections_searched: list[str] | None = None,
+        ) -> None:
             audit.info(
                 "query_failed",
                 agent=entry.name,
                 groups_applied=groups_applied,
+                orgs_applied=orgs_applied,
+                collections_searched=collections_searched,
                 query_hash=query_hash,
                 error=error_code,
                 error_class=exc.__class__.__name__,
@@ -264,8 +353,23 @@ def create_app(
             return _error_response(502, "upstream_unavailable", str(exc))
 
         # --- 5. RBAC-filtered search -------------------------------------------
+        # Two checks: entry.orgs chooses the collections, entry.groups filters
+        # inside each. Both come from the plan via the verified cert CN; no
+        # part of the request body reaches either (spec §3.4).
         try:
-            hits, qdrant_ms = await qdrant.search(vector, entry.groups, limit)
+            found = await qdrant.search(vector, entry.groups_by_org, limit)
+            hits = found.hits
+            qdrant_ms = found.elapsed_ms
+            collections_searched = found.collections
+        except QdrantOrgNotConfigured as exc:
+            # A deployment fault: the plan grants an org this dprox cannot
+            # reach. Refused, because searching the rest would look complete.
+            # The message names only the caller's own orgs; which orgs dprox
+            # serves is not a refused caller's to learn.
+            _audit_failure("upstream_unavailable", exc, ollama_ms=ollama_ms)
+            return _error_response(
+                502, "upstream_unavailable", "search is not configured for your org"
+            )
         except QdrantTimeout as exc:
             _audit_failure("upstream_timeout", exc, ollama_ms=ollama_ms)
             return _error_response(504, "upstream_timeout", str(exc))
@@ -274,22 +378,45 @@ def create_app(
             return _error_response(502, "upstream_unavailable", str(exc))
 
         # --- 6. Audit + response ----------------------------------------------
+        # A dropped passage is a defect in what was written, not in the query.
+        # ONE warning per collection per query, with the count and one example:
+        # a collection rebuilt wrongly drops the same way on every passage of
+        # every query, and a warning that repeats is a warning that gets
+        # learned into invisibility (constitution §9; arch's review #16893).
+        for collection, count, example in _group_drops(found.dropped):
+            audit.warning(
+                "passage_dropped",
+                agent=entry.name,
+                query_hash=query_hash,
+                collection=collection,
+                dropped=count,
+                example=example,
+            )
+
         latency_ms = int((time.monotonic() - start_mono) * 1000)
         event_kwargs: dict[str, Any] = {
             "agent": entry.name,
             "groups_applied": groups_applied,
+            "orgs_applied": orgs_applied,
+            # The design asks for this by name: the audit log records which
+            # collections were searched, so a wrong org check is readable
+            # afterwards and not only inferable from what came back.
+            "collections_searched": collections_searched,
+            "dropped_count": len(found.dropped),
             "query_hash": query_hash,
             "result_count": len(hits),
             "latency_ms": latency_ms,
             "ollama_ms": ollama_ms,
             "qdrant_ms": qdrant_ms,
         }
+        # One event per query, always at INFO. The flag adds the query text to
+        # it; it does not move the event to DEBUG. Logging it at DEBUG meant
+        # that turning the text ON at the usual INFO level deleted the whole
+        # event — the opposite of what someone turning it on wants
+        # (arch's review, hub #16893).
         if config.logging.log_query_text:
-            # Spec §9.1: full query text only at DEBUG when log_query_text is on.
             event_kwargs["query_text"] = req.query
-            audit.debug("query", **event_kwargs)
-        else:
-            audit.info("query", **event_kwargs)
+        audit.info("query", **event_kwargs)
 
         return JSONResponse(
             status_code=200,
@@ -298,7 +425,12 @@ def create_app(
                 "metadata": {
                     "agent": entry.name,
                     "groups_applied": groups_applied,
+                    "orgs_applied": orgs_applied,
                     "result_count": len(hits),
+                    # How many passages the index held that dprox could not
+                    # read, so a shortened answer does not read like a
+                    # complete one. Normally 0.
+                    "dropped_count": len(found.dropped),
                     "query_hash": query_hash,
                 },
             },

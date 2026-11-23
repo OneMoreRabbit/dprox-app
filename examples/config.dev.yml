@@ -11,15 +11,21 @@ server:
   # 127.0.0.1 + 8443 mirrors production conventions for the dev workflow.
   # Run scripts/dev_certs.py first to populate ./certs/ before starting.
   bind: "127.0.0.1:8443"
-  request_timeout_seconds: 30
-  max_request_body_bytes: 65536
+  # REQUIRED. Largest request body dprox will accept, in bytes; over this
+  # it answers 413 request_too_large without parsing. There is no default:
+  # dprox refuses to start if this key is absent.
+  #
+  # 65536 is chosen, not inherited: nomic-embed-text reads at most 8192
+  # tokens, about 32,000 characters, doubled for JSON escaping and
+  # multi-byte text. If the audit log shows real requests near the limit,
+  # raise it here.
+  max_body_bytes: 65536
 
 mtls:
   ca_cert_path: ./certs/ca.crt
   server_cert_path: ./certs/server.crt
   server_key_path: ./certs/server.key
   client_cert_mode: optional
-  cn_to_agent_strategy: cn_equals_name
   tls_min_version: "TLSv1.3"
   tls_pin_enabled: true
 

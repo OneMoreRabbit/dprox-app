@@ -15,6 +15,7 @@ def _config(**overrides) -> EmbeddingConfig:
         "model": "test-model",
         "vector_dim": 4,
         "timeout_seconds": 5,
+        "query_prefix": "",
     }
     base.update(overrides)
     return EmbeddingConfig(**base)

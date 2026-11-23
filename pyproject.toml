@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dprox"
-version = "0.1.2"
+version = "0.3.0"
 description = "RBAC-enforcing query proxy for ARC Power's RAG system"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -45,7 +45,11 @@ dprox = "dprox.cli:main"
 packages = ["src/dprox"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "tools/dprox-query/tests"]
+# dprox-query is its own distribution. Putting its source on the path means a
+# bare checkout runs both test suites with one `pytest`, without a second
+# install step that CI could be missing.
+pythonpath = ["src", "tools/dprox-query/src"]
 asyncio_mode = "auto"
 addopts = "-q"
 

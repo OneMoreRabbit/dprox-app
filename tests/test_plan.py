@@ -15,6 +15,19 @@ from dprox.plan import (
     parse_plan_dict,
 )
 
+# Contract 0.11 states each group's org in `groups[]`, and dprox refuses a plan
+# without it. These tests predate that section, so this supplies one covering
+# every group name they use; the org value itself is irrelevant to them.
+_TEST_GROUPS = [
+    {"name": n, "org": "testorg"}
+    for n in ("g", "g1", "g2", "g_admin", "g_engineering", "g_fresh", "g_late", "g_new")
+]
+
+
+def _with_groups(data: dict) -> dict:
+    """Add a `groups[]` section to a pre-0.11 plan dict, unless it has one."""
+    return data if "groups" in data else {**data, "groups": _TEST_GROUPS}
+
 # --- parse_plan_dict ----------------------------------------------------------
 
 
@@ -23,6 +36,24 @@ def test_parse_real_compiled_plan_shape() -> None:
     data = {
         "meta": {"compiled_at": "2026-04-27T13:50:06Z"},
         "required_groups": ["arc_g0_engineering_global", "arc_g5_any_global"],
+        # groups[] as contract 0.11 emits it: the tuple the name was built
+        # from, stated outright. dprox reads `org` from here.
+        "groups": [
+            {
+                "name": "arc_g0_engineering_global",
+                "org": "arc",
+                "grade": "g0",
+                "vertical": "engineering",
+                "scope": "global",
+            },
+            {
+                "name": "arc_g5_any_global",
+                "org": "arc",
+                "grade": "g5",
+                "vertical": "any",
+                "scope": "global",
+            },
+        ],
         "agent_users": [
             {
                 "name": "agent_oversight",
@@ -46,7 +77,12 @@ def test_parse_real_compiled_plan_shape() -> None:
         ],
     }
 
-    result = parse_plan_dict(data)
+    result = parse_plan_dict(_with_groups(data))
+
+    # Every caller resolves to the org groups[] states — not to anything
+    # parsed out of the "arc_" prefix on the group names.
+    for entry in result.values():
+        assert entry.orgs == frozenset({"arc"})
 
     assert set(result) == {"agent_oversight", "agent_arc_finance_global", "beaver"}
     assert result["agent_oversight"].role == "agent"
@@ -61,13 +97,13 @@ def test_parse_returns_frozenset_groups() -> None:
     data = {
         "agent_users": [{"name": "agent_alice", "groups": ["g1", "g2"]}],
     }
-    result = parse_plan_dict(data)
+    result = parse_plan_dict(_with_groups(data))
     assert isinstance(result["agent_alice"].groups, frozenset)
 
 
 def test_parse_empty_groups_allowed() -> None:
     data = {"agent_users": [{"name": "agent_loner", "groups": []}]}
-    result = parse_plan_dict(data)
+    result = parse_plan_dict(_with_groups(data))
     assert result["agent_loner"].groups == frozenset()
 
 
@@ -79,7 +115,7 @@ def test_parse_duplicate_in_agent_users_rejected() -> None:
         ],
     }
     with pytest.raises(PlanError, match="duplicate"):
-        parse_plan_dict(data)
+        parse_plan_dict(_with_groups(data))
 
 
 def test_parse_name_in_both_lists_rejected() -> None:
@@ -88,7 +124,7 @@ def test_parse_name_in_both_lists_rejected() -> None:
         "admin_users": [{"name": "shared", "groups": ["g2"]}],
     }
     with pytest.raises(PlanError, match="both agent_users and admin_users"):
-        parse_plan_dict(data)
+        parse_plan_dict(_with_groups(data))
 
 
 def test_parse_empty_plan_rejected() -> None:
@@ -98,14 +134,14 @@ def test_parse_empty_plan_rejected() -> None:
 
 def test_parse_admin_only_plan_works() -> None:
     data = {"admin_users": [{"name": "ops", "groups": ["g_admin"]}]}
-    result = parse_plan_dict(data)
+    result = parse_plan_dict(_with_groups(data))
     assert result["ops"].role == "admin"
 
 
 def test_parse_missing_name_rejected() -> None:
     data = {"agent_users": [{"groups": ["g1"]}]}
     with pytest.raises(PlanError, match="validation failed"):
-        parse_plan_dict(data)
+        parse_plan_dict(_with_groups(data))
 
 
 # --- load_plan_from_file ------------------------------------------------------
@@ -192,7 +228,7 @@ def test_cache_lookup_unknown_returns_none(plan_cache: PlanCache) -> None:
 
 def _rewrite_plan(path: Path, plan_dict: dict) -> None:
     """Rewrite plan and bump mtime forward so the cache notices."""
-    path.write_text(yaml.safe_dump(plan_dict), encoding="utf-8")
+    path.write_text(yaml.safe_dump(_with_groups(plan_dict)), encoding="utf-8")
     # Bump mtime by 2s — tmp filesystems can have whole-second mtime resolution.
     new_time = time.time() + 2
     import os
@@ -223,22 +259,30 @@ def test_cache_reloads_on_mtime_change(plan_yaml: Path, baseline_config) -> None
     assert new_entry.groups == frozenset({"g_new"})
 
 
-def test_cache_no_reload_when_mtime_unchanged(
+def test_a_rewrite_with_the_mtime_put_back_is_still_noticed(
     plan_yaml: Path, baseline_config_dict: dict
 ) -> None:
-    """Disable the unknown-CN reload path so we isolate the mtime-only behavior."""
+    """Staleness is (mtime_ns, inode, size), not mtime.
+
+    This test used to assert the opposite — that restoring the mtime hid the
+    change — which was true and was the defect. The estate renames a new file
+    over this one, so the inode moves; and a whole-second mtime can repeat
+    inside the second two writes land in (arch's review, hub #16893).
+    """
     baseline_config_dict["plan"]["reload_on_unknown_cn"] = False
     from dprox.config import Config
 
     config = Config.model_validate(baseline_config_dict)
     cache = PlanCache(config.plan)
     cache.initial_load()
+    assert cache.lookup("agent_alice") is not None
 
-    # Modify the file in place but keep the original mtime — cache should not see the change.
     original_stat = plan_yaml.stat()
     plan_yaml.write_text(
         yaml.safe_dump(
-            {"agent_users": [{"name": "agent_only_here_now", "groups": ["g"]}]}
+            _with_groups(
+                {"agent_users": [{"name": "agent_only_here_now", "groups": ["g_engineering"]}]}
+            )
         ),
         encoding="utf-8",
     )
@@ -246,17 +290,38 @@ def test_cache_no_reload_when_mtime_unchanged(
 
     os.utime(plan_yaml, (original_stat.st_atime, original_stat.st_mtime))
 
-    # Old agents still resolve from cache; the new one is invisible.
-    assert cache.lookup("agent_alice") is not None
-    assert cache.lookup("agent_only_here_now") is None
+    # Seen anyway: the size changed even though the mtime did not.
+    assert cache.lookup("agent_only_here_now") is not None
+    assert cache.lookup("agent_alice") is None, "the new plan is the whole plan"
+
+
+def test_an_identical_rewrite_is_not_a_reload(
+    plan_yaml: Path, baseline_config_dict: dict
+) -> None:
+    """The check still has to be quiet when nothing changed, or it is useless."""
+    from dprox.config import Config
+
+    config = Config.model_validate(baseline_config_dict)
+    cache = PlanCache(config.plan)
+    cache.initial_load()
+
+    before = cache.lookup("agent_alice")
+    assert before is not None
+    # Same bytes, same inode, same mtime: nothing to notice.
+    assert cache.lookup("agent_alice") is before
 
 
 # --- PlanCache: unknown-CN reload + rate limit --------------------------------
 
 
 def test_cache_reloads_on_unknown_cn(plan_yaml: Path, baseline_config_dict: dict) -> None:
-    """If reload_on_mtime_change is off, the unknown-CN path is the only reload trigger."""
-    baseline_config_dict["plan"]["reload_on_mtime_change"] = False
+    """The unknown-CN path on its own, with the file looking unchanged.
+
+    `reload_on_mtime_change: false` with the cache on is refused in config now
+    (it would stop revocation until restart), so the staleness check is stubbed
+    out instead: this is a filesystem that did not notice, which is the case
+    the unknown-CN path exists for.
+    """
     baseline_config_dict["plan"]["reload_on_unknown_cn"] = True
     baseline_config_dict["plan"]["reload_min_interval_seconds"] = 0
     from dprox.config import Config
@@ -264,6 +329,7 @@ def test_cache_reloads_on_unknown_cn(plan_yaml: Path, baseline_config_dict: dict
     config = Config.model_validate(baseline_config_dict)
     cache = PlanCache(config.plan)
     cache.initial_load()
+    cache._changed_locked = lambda: False  # type: ignore[method-assign]
 
     # Add a new agent to disk, but mtime checks are off so it'd stay invisible
     # except for the unknown-CN reload path.
@@ -285,7 +351,6 @@ def test_unknown_cn_reload_is_rate_limited(
     plan_yaml: Path, baseline_config_dict: dict
 ) -> None:
     """A flood of unknown CNs must not reload the plan on every miss."""
-    baseline_config_dict["plan"]["reload_on_mtime_change"] = False
     baseline_config_dict["plan"]["reload_on_unknown_cn"] = True
     baseline_config_dict["plan"]["reload_min_interval_seconds"] = 60
     from dprox.config import Config
@@ -293,6 +358,9 @@ def test_unknown_cn_reload_is_rate_limited(
     config = Config.model_validate(baseline_config_dict)
     cache = PlanCache(config.plan)
     cache.initial_load()
+    # Isolate the rate limit: with the staleness check live, the rewrite below
+    # is noticed by it and the unknown-CN path never gets a say.
+    cache._changed_locked = lambda: False  # type: ignore[method-assign]
 
     # First unknown lookup should trigger a reload.
     assert cache.lookup("agent_first_miss") is None
@@ -346,7 +414,7 @@ def test_cache_disabled_reads_fresh_each_lookup(
     # Mutate plan WITHOUT bumping mtime — cache_disabled should still see it.
     plan_yaml.write_text(
         yaml.safe_dump(
-            {"agent_users": [{"name": "agent_fresh", "groups": ["g_fresh"]}]}
+            _with_groups({"agent_users": [{"name": "agent_fresh", "groups": ["g_fresh"]}]})
         ),
         encoding="utf-8",
     )
@@ -362,3 +430,74 @@ def test_initial_load_missing_file_raises(baseline_config_dict: dict, tmp_path: 
     cache = PlanCache(config.plan)
     with pytest.raises(PlanError, match="not found"):
         cache.initial_load()
+
+
+# --- a group's org comes from groups[], never from its name -------------------
+#
+# Contract 0.11 states each group's org. dprox reads it from there: parsing
+# "arc_g2_..." would make an access-control decision out of a naming
+# convention (constitution principle 10). These cover the refusals, which are
+# the security-relevant half.
+
+
+def test_orgs_resolve_from_groups_section() -> None:
+    data = {
+        "groups": [
+            {"name": "arc_public", "org": "arc"},
+            {"name": "job_public", "org": "job"},
+        ],
+        "agent_users": [
+            {"name": "agent_both", "groups": ["arc_public", "job_public"]},
+            {"name": "agent_arc", "groups": ["arc_public"]},
+        ],
+    }
+    out = parse_plan_dict(data)
+
+    assert out["agent_both"].orgs == frozenset({"arc", "job"})
+    assert out["agent_arc"].orgs == frozenset({"arc"})
+
+
+def test_org_is_not_guessed_from_the_group_name() -> None:
+    """A name that looks like one org but is declared another follows groups[].
+
+    If dprox ever parsed the prefix it would answer "arc" here. It must
+    answer what the plan says.
+    """
+    data = {
+        "groups": [{"name": "arc_looks_like_arc", "org": "job"}],
+        "agent_users": [{"name": "agent_x", "groups": ["arc_looks_like_arc"]}],
+    }
+    assert parse_plan_dict(data)["agent_x"].orgs == frozenset({"job"})
+
+
+def test_plan_without_groups_section_is_refused() -> None:
+    """A pre-0.11 plan is refused rather than served with unknown orgs."""
+    data = {"agent_users": [{"name": "agent_x", "groups": ["g1"]}]}
+    with pytest.raises(PlanError, match="groups.*0.11"):
+        parse_plan_dict(data)
+
+
+def test_group_absent_from_groups_section_is_refused() -> None:
+    """An unresolvable group refuses the plan; it is never skipped.
+
+    Skipping it would quietly shrink a caller's orgs, and guessing from the
+    name is the thing the section exists to stop. Both are wrong, so refuse.
+    """
+    data = {
+        "groups": [{"name": "arc_public", "org": "arc"}],
+        "agent_users": [{"name": "agent_x", "groups": ["arc_public", "cpf_secret"]}],
+    }
+    with pytest.raises(PlanError, match="cpf_secret"):
+        parse_plan_dict(data)
+
+
+def test_group_with_two_orgs_is_refused() -> None:
+    data = {
+        "groups": [
+            {"name": "arc_public", "org": "arc"},
+            {"name": "arc_public", "org": "job"},
+        ],
+        "agent_users": [{"name": "agent_x", "groups": ["arc_public"]}],
+    }
+    with pytest.raises(PlanError, match="two orgs"):
+        parse_plan_dict(data)

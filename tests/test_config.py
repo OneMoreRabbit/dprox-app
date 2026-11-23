@@ -14,7 +14,7 @@ from dprox.config import (
 
 
 def test_baseline_config_loads(baseline_config: Config) -> None:
-    assert baseline_config.org == "test"
+    assert baseline_config.qdrant.collections == {"testorg": "documents"}
     assert baseline_config.server.host == "127.0.0.1"
     assert baseline_config.server.port == 8443
     assert baseline_config.qdrant.api_key_env == "QDRANT_RO_API_KEY"
@@ -24,7 +24,7 @@ def test_baseline_config_loads(baseline_config: Config) -> None:
 def test_loads_from_file(write_config, baseline_config_dict) -> None:
     path = write_config(baseline_config_dict)
     config = load_config(path)
-    assert config.org == "test"
+    assert config.qdrant.collections == {"testorg": "documents"}
     assert isinstance(config.mtls.ca_cert_path, Path)
 
 
@@ -153,4 +153,59 @@ def test_load_uses_env_path(monkeypatch, write_config, baseline_config_dict) -> 
     path = write_config(baseline_config_dict, name="from-env.yml")
     monkeypatch.setenv("DPROX_CONFIG", str(path))
     config = load_config()
-    assert config.org == "test"
+    assert config.qdrant.collections == {"testorg": "documents"}
+
+
+# Removed in 0.1.3: three settings that were parsed, validated and read by
+# nothing (constitution §11 -- a phantom control advertises a capability the
+# tool does not have). config.py is extra="forbid", so a pre-0.1.3 config
+# still carrying them now fails at load. That is a BREAKING config change and
+# these cases pin it deliberately: the error must name the key, so an operator
+# hitting it at boot is told what to delete rather than left guessing.
+@pytest.mark.parametrize(
+    ("section", "key", "value"),
+    [
+        ("server", "request_timeout_seconds", 30),
+        ("server", "max_request_body_bytes", 65536),
+        ("mtls", "cn_to_agent_strategy", "cn_equals_name"),
+    ],
+)
+def test_removed_phantom_keys_are_rejected_by_name(
+    write_config, baseline_config_dict, section: str, key: str, value: object
+) -> None:
+    baseline_config_dict[section][key] = value
+    path = write_config(baseline_config_dict, name=f"legacy-{key}.yml")
+    with pytest.raises(ConfigError, match=key):
+        load_config(path)
+
+
+# --- server.max_body_bytes (required, no default) -----------------------------
+#
+# Constitution principle 11: a value whose wrong answer is invisible is
+# declared, and its absence is an error at startup. dprox invents no limit.
+
+
+def test_missing_max_body_bytes_stops_the_start_and_names_the_key(
+    write_config, baseline_config_dict
+) -> None:
+    del baseline_config_dict["server"]["max_body_bytes"]
+    path = write_config(baseline_config_dict, name="no-limit.yml")
+    with pytest.raises(ConfigError, match="max_body_bytes"):
+        load_config(path)
+
+
+def test_leftover_max_request_body_bytes_stops_the_start_and_names_it(
+    write_config, baseline_config_dict
+) -> None:
+    """The v0.1.x key must not be carried forward silently.
+
+    v0.1.x required `server.max_request_body_bytes` and never enforced it.
+    v0.2.0 renames the concept to `max_body_bytes` and enforces it. If an
+    operator upgrades without editing the config, the old key must stop the
+    start and name itself -- otherwise the same line would mean "inert" on
+    v0.1.x and "enforcing" on v0.2.0 with no diff to notice.
+    """
+    baseline_config_dict["server"]["max_request_body_bytes"] = 65536
+    path = write_config(baseline_config_dict, name="legacy-limit-key.yml")
+    with pytest.raises(ConfigError, match="max_request_body_bytes"):
+        load_config(path)

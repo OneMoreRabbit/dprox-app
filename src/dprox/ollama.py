@@ -82,7 +82,13 @@ class OllamaClient:
         try:
             response = await self._http.post(
                 "/api/embeddings",
-                json={"model": self._config.model, "prompt": text},
+                # The prefix the model was indexed with, from configuration.
+                # Applied here and nowhere else, so there is one place it can
+                # be read and one place it can be wrong.
+                json={
+                    "model": self._config.model,
+                    "prompt": f"{self._config.query_prefix}{text}",
+                },
             )
         except httpx.TimeoutException as exc:
             raise OllamaTimeout(
@@ -166,6 +172,10 @@ class OllamaClient:
         return {
             "endpoint": self._config.endpoint,
             "model": self._config.model,
+            # Reported, not checked: nothing can tell dprox what prefix the
+            # collection was indexed with. Showing it is what lets someone
+            # compare the two without reading the config file on the host.
+            "query_prefix": self._config.query_prefix,
             "reachable": reachable,
             "model_present": model_present,
             "error": error,

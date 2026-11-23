@@ -2,37 +2,72 @@
 # Real plans are produced by `rbac-compile` from the platform's
 # agent_registry.yml + per-org definitions and consumed by dprox at
 # /mnt/registry/compiled_plan.yml in the container.
+#
+# Two orgs, because one dprox answers every org since v0.3.0. The orgs here
+# are the ones config.example.yml has a collection for; a caller whose groups
+# are in an org the config does not name is refused, not quietly shortened.
 
 meta:
   compiled_at: '2026-01-01T00:00:00Z'
-  compiler_version: 0.3.0
+  compiler_version: 0.7.3
+  schema_version: '0.11'
 
-# Informational; dprox doesn't validate against this set in v0.1.
+# Informational; dprox doesn't validate against this set.
 required_groups:
-- example_g0_engineering
-- example_g1_finance
-- example_g2_admin
+- arc_g0_engineering
+- arc_g1_finance
+- arc_g2_admin
+- job_g0_engineering
+
+# groups[] states each group's org (compiled-rbac-plan 0.11). dprox reads the
+# org from here and NEVER parses it out of a group's name: a naming convention
+# is not an access-control decision (constitution principle 10). A plan without
+# this section is refused.
+groups:
+- name: arc_g0_engineering
+  org: arc
+  grade: g0
+  vertical: engineering
+  scope: all
+- name: arc_g1_finance
+  org: arc
+  grade: g1
+  vertical: finance
+  scope: all
+- name: arc_g2_admin
+  org: arc
+  grade: g2
+  vertical: admin
+  scope: all
+- name: job_g0_engineering
+  org: job
+  grade: g0
+  vertical: engineering
+  scope: all
 
 agent_users:
 - name: agent_alice
-  description: Engineering agent (example)
+  description: Engineering agent, arc only
   groups:
-  - example_g0_engineering
+  - arc_g0_engineering
 
 - name: agent_bob
-  description: Finance agent (example)
+  description: Finance agent, arc only
   groups:
-  - example_g1_finance
+  - arc_g1_finance
 
+# Reads two orgs. This could not be configured before v0.3.0: an agent has one
+# dprox address, and before this release one dprox served one org.
 - name: agent_oversight
-  description: Cross-functional oversight agent (example)
+  description: Cross-org engineering agent, arc and job
   groups:
-  - example_g0_engineering
-  - example_g1_finance
+  - arc_g0_engineering
+  - job_g0_engineering
 
 admin_users:
 - name: admin_alice
   groups:
-  - example_g0_engineering
-  - example_g1_finance
-  - example_g2_admin
+  - arc_g0_engineering
+  - arc_g1_finance
+  - arc_g2_admin
+  - job_g0_engineering

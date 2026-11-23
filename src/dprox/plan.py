@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import threading
 import time
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
@@ -34,6 +35,21 @@ class AgentEntry:
     role: Role
     groups: frozenset[str]
     description: str | None = None
+    groups_by_org: Mapping[str, frozenset[str]] = field(default_factory=dict)
+    """This caller's groups, split by the org each belongs to, read from the
+    plan's ``groups[]`` section — never parsed out of a group name
+    (constitution principle 10).
+
+    The split, rather than a flat set plus a list of orgs, is what makes the
+    two checks independent: each collection is searched with only the groups
+    of its own org, so a passage written into the wrong org's collection
+    cannot come back labelled with that collection's org (arch's review,
+    hub #16893)."""
+
+    @property
+    def orgs(self) -> frozenset[str]:
+        """The orgs this caller may be searched in."""
+        return frozenset(self.groups_by_org)
 
 
 class _Entry(BaseModel):
@@ -45,6 +61,18 @@ class _Entry(BaseModel):
     description: str | None = None
 
 
+class _GroupEntry(BaseModel):
+    """One row of the plan's ``groups[]`` section (contract 0.11).
+
+    Only ``name`` and ``org`` are read. ``grade``, ``vertical`` and
+    ``scope`` are part of the tuple and tolerated, not used.
+    """
+
+    model_config = ConfigDict(extra="allow", str_strip_whitespace=True)
+    name: str = Field(min_length=1)
+    org: str = Field(min_length=1)
+
+
 class _PlanModel(BaseModel):
     """Loose Pydantic model for the compiled plan's top level.
 
@@ -54,6 +82,7 @@ class _PlanModel(BaseModel):
     """
 
     model_config = ConfigDict(extra="allow")
+    groups: list[_GroupEntry] = Field(default_factory=list)
     agent_users: list[_Entry] = Field(default_factory=list)
     admin_users: list[_Entry] = Field(default_factory=list)
 
@@ -69,16 +98,59 @@ def parse_plan_dict(data: dict) -> dict[str, AgentEntry]:
     except ValidationError as exc:
         raise PlanError(f"plan validation failed:\n{exc}") from exc
 
+    # A plan with no callers is the more fundamental fault, so it is reported
+    # first: on an empty plan "no groups[]" is true but unhelpful.
+    if not plan.agent_users and not plan.admin_users:
+        raise PlanError("plan has no agent_users or admin_users entries")
+
+    # groups[] is the ONLY source of a group's org (contract 0.11,
+    # constitution principle 10). dprox never parses "arc_g2_..." to learn
+    # an org: a naming convention is not an access-control decision.
+    if not plan.groups:
+        raise PlanError(
+            "plan has no groups[] section — dprox needs compiled-rbac-plan 0.11 "
+            "or later, which states each group's org"
+        )
+    group_org: dict[str, str] = {}
+    for g in plan.groups:
+        if g.name in group_org and group_org[g.name] != g.org:
+            raise PlanError(
+                f"groups[] gives {g.name!r} two orgs: "
+                f"{group_org[g.name]!r} and {g.org!r}"
+            )
+        group_org[g.name] = g.org
+
+    def split_by_org(name: str, groups: frozenset[str]) -> dict[str, frozenset[str]]:
+        """Split a caller's groups by the org each belongs to, refusing to guess.
+
+        A group a caller holds that groups[] does not list is a defect in
+        the plan, not something to work around: dprox would have no way to
+        know which collection it belongs to, and the safe-looking choices
+        (skip it, or guess from its name) are both wrong. Refuse the plan.
+        """
+        missing = sorted(g for g in groups if g not in group_org)
+        if missing:
+            raise PlanError(
+                f"{name!r} holds group(s) absent from groups[]: "
+                f"{', '.join(missing)} — the plan is inconsistent"
+            )
+        out: dict[str, set[str]] = {}
+        for g in groups:
+            out.setdefault(group_org[g], set()).add(g)
+        return {org: frozenset(gs) for org, gs in out.items()}
+
     out: dict[str, AgentEntry] = {}
 
     for entry in plan.agent_users:
         if entry.name in out:
             raise PlanError(f"duplicate name in agent_users: {entry.name!r}")
+        groups = frozenset(entry.groups)
         out[entry.name] = AgentEntry(
             name=entry.name,
             role="agent",
-            groups=frozenset(entry.groups),
+            groups=groups,
             description=entry.description,
+            groups_by_org=split_by_org(entry.name, groups),
         )
 
     for entry in plan.admin_users:
@@ -86,11 +158,13 @@ def parse_plan_dict(data: dict) -> dict[str, AgentEntry]:
             raise PlanError(
                 f"name {entry.name!r} appears in both agent_users and admin_users"
             )
+        groups = frozenset(entry.groups)
         out[entry.name] = AgentEntry(
             name=entry.name,
             role="admin",
-            groups=frozenset(entry.groups),
+            groups=groups,
             description=entry.description,
+            groups_by_org=split_by_org(entry.name, groups),
         )
 
     if not out:
@@ -140,10 +214,11 @@ class PlanCache:
     def __init__(self, config: PlanConfig) -> None:
         self._config = config
         self._lock = threading.Lock()
-        self._mtime: float | None = None
+        self._identity: tuple[int, int, int] | None = None
         self._last_unknown_cn_reload_mono: float = 0.0
         self._agents: dict[str, AgentEntry] = {}
         self._loaded = False
+        self._last_error: str | None = None
 
     @property
     def path(self) -> Path:
@@ -151,8 +226,21 @@ class PlanCache:
 
     @property
     def loaded(self) -> bool:
+        """True only while the plan in memory came from a reload that worked.
+
+        A reload that fails clears this. Before that it stayed true from the
+        last success, so ``/healthz`` reported ok while every query was
+        getting a 502 — health has to follow the plan being loaded, which is
+        what the spec says it does (arch's review, hub #16893).
+        """
         with self._lock:
             return self._loaded
+
+    @property
+    def last_error(self) -> str | None:
+        """Why the last reload failed, or None. Shown by ``/healthz``."""
+        with self._lock:
+            return self._last_error
 
     def initial_load(self) -> None:
         """Load the plan once at startup. Raises PlanError on any failure."""
@@ -171,7 +259,7 @@ class PlanCache:
                 self._reload_locked()
                 return self._agents.get(cn)
 
-            if self._config.reload_on_mtime_change and self._mtime_changed_locked():
+            if self._config.reload_on_mtime_change and self._changed_locked():
                 self._reload_locked()
 
             entry = self._agents.get(cn)
@@ -197,20 +285,44 @@ class PlanCache:
 
     # --- internals ----------------------------------------------------------
 
-    def _mtime_changed_locked(self) -> bool:
+    def _identity_locked(self) -> tuple[int, int, int] | None:
+        """(mtime_ns, inode, size) — what "the same file, unchanged" means here.
+
+        Not mtime alone. The estate writes the plan by rendering a new file and
+        renaming it over this one, so the inode changes; and a mtime in whole
+        seconds can repeat within the same second, which is exactly when two
+        writes land together. Any of the three differing is a change
+        (arch's review, hub #16893).
+        """
         try:
-            current = self.path.stat().st_mtime
+            st = self.path.stat()
         except OSError:
             # File gone or unreadable — let _reload_locked surface the real error.
+            return None
+        return (st.st_mtime_ns, st.st_ino, st.st_size)
+
+    def _changed_locked(self) -> bool:
+        current = self._identity_locked()
+        if current is None:
             return True
-        return current != self._mtime
+        return current != self._identity
 
     def _reload_locked(self) -> None:
-        agents = load_plan_from_file(self.path)  # raises PlanError
         try:
-            mtime = self.path.stat().st_mtime
-        except OSError as exc:
-            raise PlanError(f"could not stat plan after reload {self.path}: {exc}") from exc
+            agents = load_plan_from_file(self.path)  # raises PlanError
+            identity = self._identity_locked()
+            if identity is None:
+                raise PlanError(f"could not stat plan after reload {self.path}")
+        except PlanError as exc:
+            # Fail closed AND fail visibly: the old entries are dropped so no
+            # stale answer can be served, and `loaded` goes false so health
+            # stops saying ok.
+            self._agents = {}
+            self._identity = None
+            self._loaded = False
+            self._last_error = str(exc)
+            raise
         self._agents = agents
-        self._mtime = mtime
+        self._identity = identity
         self._loaded = True
+        self._last_error = None

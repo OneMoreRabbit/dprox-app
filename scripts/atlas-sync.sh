@@ -6,6 +6,7 @@ set -e
 # shellcheck source=atlas-common.sh disable=SC1091
 . "$(dirname -- "$0")/atlas-common.sh"
 cd "$ATLAS_REPO_ROOT"
+_STALE=0
 
 if [ -z "${ATLAS_VAULT_REMOTE:-}" ]; then
   echo "atlas-sync: ATLAS_VAULT_REMOTE is unset in .atlas.conf" >&2
@@ -18,8 +19,17 @@ fi
 # for a write-side reason. Fetch instead, and only ever warn.
 if [ -d "$ATLAS_VAULT/.git" ]; then
   if git -C "$ATLAS_VAULT" rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1; then
-    git -C "$ATLAS_VAULT" pull --ff-only ||
+    git -C "$ATLAS_VAULT" pull --ff-only || {
       echo "atlas-sync: WARN vault pull failed — continuing on the current checkout" >&2
+      _STALE=1
+      # The common collision (sync-compile, 2026-09-13): a validator run dirties the
+      # DERIVED views — the exact five files every CI regen commit touches — so the
+      # ff-only pull always aborts. Name the cause and its safe remedy; do not apply
+      # it silently, since deciding what is discardable is not this script's call.
+      if ! git -C "$ATLAS_VAULT" diff --quiet 2>/dev/null; then
+        echo "atlas-sync: vault clone has local modifications — if these are only derived views (dashboard, registry/graph.md, registry/.compiled, component.md edge blocks) they are CI-owned: discard with  git -C \"$ATLAS_VAULT\" checkout -- .  and re-run" >&2
+      fi
+    }
   else
     git -C "$ATLAS_VAULT" fetch --prune origin >/dev/null 2>&1 ||
       echo "atlas-sync: WARN vault fetch failed — continuing offline" >&2
@@ -69,8 +79,10 @@ elif [ -n "$REF" ]; then
   git -C "$ATLAS_METHOD" checkout -q "$REF" 2>/dev/null ||
     echo "atlas-sync: WARN method tag $REF unavailable — using current checkout" >&2
 else
-  git -C "$ATLAS_METHOD" pull --ff-only ||
+  git -C "$ATLAS_METHOD" pull --ff-only || {
     echo "atlas-sync: WARN method pull failed — continuing on the current checkout" >&2
+    _STALE=1
+  }
 fi
 [ -n "$REF" ] && echo "atlas-sync: method pin $PIN -> $REF @ $(git -C "$ATLAS_METHOD" rev-parse --short HEAD 2>/dev/null || echo '?')" >&2
 
@@ -98,7 +110,13 @@ if [ -n "$BWORK" ]; then
   # a missing branch is never invented — that is a seat-setup problem, reported loudly.
   CUR=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo HEAD)
   if [ "$CUR" != "$BWORK" ] && [ "$CUR" != "HEAD" ]; then
-    if git checkout -q "$BWORK" 2>/dev/null ||
+    # Uncommitted work is never carried to another branch (1.35.6, agent-eco's
+    # sync-compile: git takes it along when nothing conflicts, and an unfinished change
+    # on a feature branch ended up on the work branch). atlas-context puts the branch
+    # in the briefing either way.
+    if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
+      echo "atlas-sync: BRANCH POLICY — this repo is on '$CUR' with uncommitted changes; NOT switched to '$BWORK'. Commit them on '$CUR' first." >&2
+    elif git checkout -q "$BWORK" 2>/dev/null ||
        git checkout -q -b "$BWORK" --track "origin/$BWORK" 2>/dev/null; then
       echo "atlas-sync: switched $CUR -> $BWORK (branching policy in the vault's io-graph.yml)" >&2
     else
@@ -126,16 +144,40 @@ fi
 TPL="$ATLAS_METHOD/templates/component-repo/scripts"
 if [ -d "$TPL" ]; then
   _DRIFTED=0
-  for f in atlas-common.sh atlas-sync.sh atlas-context.sh atlas-guard-write.sh atlas-guard-publish.sh atlas-guard-supervise.sh; do
+  for f in atlas-common.sh atlas-sync.sh atlas-context.sh atlas-guard-write.sh atlas-guard-publish.sh atlas-guard-supervise.sh atlas-needs.py atlas-payload.py atlas-discard-views.sh; do
     [ -f "$TPL/$f" ] || continue
     [ -f "scripts/$f" ] || { echo "atlas-sync: WARN scripts/$f missing — method ${REF:-default} ships it" >&2; _DRIFTED=1; continue; }
     cmp -s "$TPL/$f" "scripts/$f" ||
       { echo "atlas-sync: WARN scripts/$f differs from method ${REF:-default} template — re-copy, or raise a proposal if the change is deliberate" >&2; _DRIFTED=1; }
   done
+  # The publish steps are a copy too (1.35.5, sync-compile): an old one keeps old commands.
+  _PUB=.claude/commands/atlas-publish.md
+  if [ -f "$TPL/../$_PUB" ] && [ -f "$_PUB" ] && ! cmp -s "$TPL/../$_PUB" "$_PUB"; then
+    echo "atlas-sync: WARN $_PUB differs from method ${REF:-default} template — re-copy, or raise a proposal if the change is deliberate" >&2; _DRIFTED=1
+  fi
   # The warning carries its own remedy (1.26.2, AgentEco ask): the exact refresh
   # command, filled in — so no arch seat ever needs to mint a per-release broadcast
   # (which reliably went stale and then named an OLDER version to install).
   if [ "$_DRIFTED" = 1 ]; then
-    echo "atlas-sync: refresh with: python3 .atlas-method/tools/atlas_init.py --slug $SLUG --force${ATLAS_LAUNCH_DIR:+ --launch-dir \"$ATLAS_LAUNCH_DIR\"} --vault-remote $ATLAS_VAULT_REMOTE   (then re-run with --verify; commit scripts/)" >&2
+    echo "atlas-sync: refresh with: python3 .atlas-method/tools/atlas_init.py --component ${COMPONENT:-$SLUG} --force${ATLAS_LAUNCH_DIR:+ --launch-dir \"$ATLAS_LAUNCH_DIR\"} --vault-remote $ATLAS_VAULT_REMOTE   (then re-run with --verify; commit scripts/)" >&2
+    _SCRIPT_DRIFT=1
   fi
 fi
+
+# Declared degradation (constitution 1.3 shape, sync-compile finding 2026-09-13):
+# continuing on a stale checkout is the right behaviour — a refresh must never abort
+# the session — but EXITING 0 about it claimed success a caller could not distinguish
+# from a real sync. The WARN was stderr-only; nothing programmatic could tell
+# *synced* from *could not sync, your briefing is stale*. Exit 3 says exactly that,
+# after all the work above has still been done: degraded, and declared at the one
+# surface a caller reads. (3, not 1: the script completed; the checkout is stale.)
+# A pin whose changed templates have not reached this seat is NOT adopted (1.33.11,
+# labs: three seats read "pin 1.33.3 -> v1.33.3" as done while the release's
+# enforcement guards were still 1.33.2 bytes). Same rule as a failed pull: continue
+# degraded, never claim fresh - say it in the LAST line and exit 3.
+if [ "${_SCRIPT_DRIFT:-0}" = 1 ]; then
+  echo "atlas-sync: pin FETCHED but NOT ADOPTED on this seat - script(s) above differ from the pinned templates; run the refresh command, then --verify" >&2
+  exit 3
+fi
+[ "$_STALE" = 1 ] && exit 3
+exit 0

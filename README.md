@@ -16,6 +16,61 @@ Earlier inputs and superseded specs are under `../integrations/archive/`.
 public). All twelve build steps are complete; end-to-end `/v1/query`
 against the real arc Qdrant + Ollama is passing on otter.
 
+> **Image namespace moved.** Estate ruling 2026-09-13: published images use the
+> organisation namespace `ghcr.io/onemorerabbit/`, never a personal account.
+> `v0.1.1` above is stated as deployed — it really is at `ghcr.io/jobcpf/` and
+> that is still the pullable image. `v0.1.2` is **source-only**: its build
+> predates this change and failed to push, so no image exists for that tag.
+> `v0.2.0` is the first release to publish to `ghcr.io/onemorerabbit/dprox`.
+> Consumers re-point only after a tag there is confirmed pullable **by pulling
+> it**.
+
+## Upgrading to 0.2.0 — BREAKING config change
+
+**Three settings were removed. A config that still sets any of them will not
+start.** Config parsing is strict (`extra="forbid"`), so the keys must be
+deleted from the deployed config **before** the image is rolled to 0.2.0, or
+dprox fails at boot:
+
+> **Edit first, roll second — they are two acts, not one.** Config is
+> templated by one playbook and the image pinned in another, so they cannot be
+> one act. The order matters because it is asymmetric: deleting the keys is
+> harmless on 0.1.x (nothing read them), while rolling the image first is a
+> boot failure. (estate-manage, `dprox-config-migration-response-v0_1`.)
+
+| Removed key | Was |
+|---|---|
+| `server.request_timeout_seconds` | parsed, never applied — no request envelope existed |
+| `server.max_request_body_bytes` | parsed, never enforced — **no body-size limit existed** |
+| `mtls.cn_to_agent_strategy` | parsed, never read; only one value was ever legal |
+
+**One key is added, and it is required:** `server.max_body_bytes` (65536).
+dprox refuses to start without it. It is a *new* name on purpose — the old
+`max_request_body_bytes` was never enforced, so reusing it would have changed
+that line's behaviour with no diff to notice. A leftover old key stops the
+start and names itself.
+
+All three were declared, validated and read by nothing. They are deleted rather
+than implemented because their values were never chosen by anyone — implementing
+`65536` would have turned an example comment into a real limit on the trust
+boundary (constitution §11).
+
+**The failure is loud and names the key**, e.g.:
+
+```
+config validation failed for /etc/dprox/config.yml:
+server.max_request_body_bytes
+  Extra inputs are not permitted [type=extra_forbidden, ...]
+```
+
+Delete the named key and restart. Nothing else changes: no behaviour depended on
+these settings, because nothing read them.
+
+> **`max_request_body_bytes` removed a cap that never existed** — dprox did not
+> bound request body size on `0.1.x`, despite that key. `0.2.0` adds a real one
+> as `server.max_body_bytes`, enforced before parsing and refused with
+> HTTP 413 `request_too_large`.
+
 | Step | Coverage |
 |---|---|
 | 1. Skeleton | `dprox` CLI (`serve`, `health`, `version`), FastAPI app, `/healthz`, `/version` |
@@ -31,10 +86,10 @@ against the real arc Qdrant + Ollama is passing on otter.
 
 ### Release history
 
-| Tag | Notes |
-|---|---|
-| `v0.1.0` (2026-05-12) | First public image. Smoke surfaced `qdrant-client` API drift (written up in the Atlas vault as `components/dprox/docs/provides/dprox-qdrant-client-bug-response-v0_1.md`) — `AsyncQdrantClient.search()` removed in 1.18. |
-| `v0.1.1` (2026-05-12) | Migrated to `query_points` (universal query API). Pin tightened to `qdrant-client>=1.13,<2.0`. Two regression-guard tests added. |
+See [`release-notes.md`](release-notes.md) — the one home for release history,
+including versions built but not yet released. Note `v0.1.2` is tagged but
+**source-only**: no image was published for it, and `v0.1.1` remains the
+consumable image.
 
 ## Quick start (venv, Windows PowerShell)
 
@@ -138,19 +193,36 @@ deployments pin explicitly — never use `:latest`.
 To cut a release:
 
 ```bash
-# 1. Bump version in BOTH files (no automation in v0.1 — discipline).
-#    Match exactly; release CI gates on it.
+# 1. On dev: bump version in BOTH files (no automation — discipline).
+#    Match exactly; release CI gates on it. Drop any -dev suffix.
 $EDITOR src/dprox/version.py pyproject.toml
+git commit -am "release: X.Y.Z" && git push     # let CI go green first
 
-# 2. Commit, tag, push.
-git commit -am "release v0.1.0"
-git tag v0.1.0
-git push origin main --tags
+# 2. Merge to main, tag, and push them together.
+git checkout main && git pull
+git merge --no-ff dev -m "Release: merge dev -> main"
+git tag -a vX.Y.Z -m "Release vX.Y.Z"
+git push origin main --follow-tags
 ```
+
+`--no-ff` so the release is a commit you can point at; `--follow-tags` so
+there is never a window where `main` has moved and the tag has not.
+Release tags are `vMAJOR.MINOR.PATCH` (constitution §12) — no bare `X.Y.Z`.
+
+> `REVISIT(branch-protection-pass)` — **the flow above only.**
+> This flow is per the current runbook and changes with the branch-protection
+> pass, which moves releases to a PR `dev → main`, then tags the merge commit
+> and pushes the tag separately. Re-issue the `bash` block and this note in
+> that pass.
+>
+> **Not in scope for that re-issue:** the tag *spelling* (constitution §12)
+> and the namespace *derivation* (§11) are rulings the pass does not touch.
 
 The `release.yml` workflow runs the test gate, verifies the tag matches
 `dprox.__version__`, builds the image with Buildx, and pushes both
-`ghcr.io/jobcpf/dprox:v0.1.0` and `ghcr.io/jobcpf/dprox:0.1.0`.
+`ghcr.io/<org>/dprox:vX.Y.Z` and `ghcr.io/<org>/dprox:X.Y.Z`. The namespace
+is derived from `github.repository_owner` (lowercased), not hardcoded —
+estate artefacts publish under the organisation (constitution §11).
 
 ## Cert mount permissions (production note)
 

@@ -1,14 +1,21 @@
-# Example dprox config — production shape.
-# Per-org values are templated by the platform's Ansible from the registry.
-# Schema: see src/dprox/config.py and dprox-design-spec-v0.1.md §6.2.
-
-# Org name — for logging only.
-org: arc
+# Example dprox config — production shape, v0.3.0.
+# Templated by the platform's Ansible from the registry.
+# Schema: see src/dprox/config.py and dprox-design-spec-v0_3.
+#
+# One dprox answers every org, so there is no top-level `org:` key. A config
+# that still carries one fails at startup rather than being ignored.
 
 server:
   bind: "0.0.0.0:8443"
-  request_timeout_seconds: 30        # outer envelope; per-stage timeouts below
-  max_request_body_bytes: 65536      # generous; queries are small
+  # REQUIRED. Largest request body dprox will accept, in bytes; over this
+  # it answers 413 request_too_large without parsing. There is no default:
+  # dprox refuses to start if this key is absent.
+  #
+  # 65536 is chosen, not inherited: nomic-embed-text reads at most 8192
+  # tokens, about 32,000 characters, doubled for JSON escaping and
+  # multi-byte text. If the audit log shows real requests near the limit,
+  # raise it here.
+  max_body_bytes: 65536
 
 # mTLS configuration. Cert files are mounted into the container at
 # /etc/dprox/certs/ by Ansible (see cert-provisioning-brief.md).
@@ -17,7 +24,6 @@ mtls:
   server_cert_path: /etc/dprox/certs/server.crt
   server_key_path: /etc/dprox/certs/server.key
   client_cert_mode: optional         # listener accepts client cert; routes enforce
-  cn_to_agent_strategy: cn_equals_name
   tls_min_version: "TLSv1.3"
   tls_pin_enabled: true
 
@@ -35,12 +41,32 @@ embedding:
   model: nomic-embed-text
   vector_dim: 768
   timeout_seconds: 10
+  # REQUIRED, no default. Put in front of every question before it is
+  # embedded, and it must match what the collection was indexed with.
+  # Nothing can check that it does — a wrong prefix does not fail, it just
+  # lowers every score — so it is declared or dprox does not start.
+  #
+  # An empty string is a real choice, meaning "this model wants no prefix":
+  #   nomic-embed-text   "search_query: "   (the trailing space is part of it)
+  #   bge-m3             ""
+  #   qwen3-embedding    an instruction line on the query, none on documents
+  #
+  # Changing this changes every score, so change it with the model and the
+  # re-index, never on its own.
+  query_prefix: "search_query: "
 
-# Qdrant (read-only access).
+# Qdrant (read-only access). One server, one collection for each org.
 qdrant:
-  url: http://qdrant_arc:6333
+  url: http://qdrant:6333
   api_key_env: QDRANT_RO_API_KEY     # name of env var holding the RO key
-  collection: documents
+  # REQUIRED, at least one entry: org name -> collection name. The org names
+  # must be the ones the plan's groups[] section states, or no caller ever
+  # resolves to them. Nothing is derived from a name and there is no default.
+  # Two orgs may not share a collection: dprox refuses to start, because that
+  # would make the org check a no-op and leave only the group filter.
+  collections:
+    arc: arc_documents
+    job: job_documents
   default_limit: 10
   max_limit: 50
   timeout_seconds: 10

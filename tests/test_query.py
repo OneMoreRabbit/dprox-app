@@ -137,12 +137,14 @@ def test_query_result_shape_matches_spec(
         "text",
         "classification_group",
         "score",
+        "org",
         "source_path_rel",
         "file_type",
         "chunk_index",
         "chunk_total",
         "modified_at",
         "indexed_at",
+        "conversation",
     }
     for hit in body["results"]:
         assert set(hit) == expected_keys
@@ -151,6 +153,9 @@ def test_query_result_shape_matches_spec(
     minimal = body["results"][1]
     assert minimal["source_path_rel"] is None
     assert minimal["chunk_index"] is None
+
+    # org is dprox's to state, from the collection it searched, not the payload
+    assert {hit["org"] for hit in body["results"]} == {"testorg"}
 
 
 # --- auth + identity ----------------------------------------------------------
@@ -329,7 +334,12 @@ def test_query_when_plan_reload_fails_returns_502(
     assert response.status_code == 502
     body = response.json()
     assert body["error"] == "upstream_unavailable"
-    assert "simulated" in body["message"]
+    # A FIXED message. PlanError text names other principals, their groups and
+    # the plan's path, and the plan has to be read before this CN is known to
+    # be in it — so any certificate the CA signed could read it out of a 502
+    # body (arch's review, hub #16893). The detail goes to the audit log.
+    assert body["message"] == "the access plan could not be read"
+    assert "simulated" not in body["message"]
 
 
 def test_query_when_ollama_times_out_returns_504(
@@ -448,3 +458,68 @@ def test_version_remains_public_with_full_pipeline(
     with _client(baseline_config, plan_cache, mock_ollama, mock_qdrant) as c:
         response = c.get("/version")
     assert response.status_code == 200
+
+
+# --- request size limit (server.max_body_bytes) -------------------------------
+#
+# Ruled by the operator 2026-11-13 via agenteco-needs-dprox-request-size-limit.
+# The limit is enforced BEFORE parsing, so these assert on the raw body rather
+# than on a QueryRequest field.
+
+
+def _body_of(n: int) -> bytes:
+    """A syntactically valid request body of exactly n bytes."""
+    envelope = b'{"query":"' + b'"}'
+    pad = n - len(envelope)
+    assert pad > 0, "n too small to build a valid body"
+    return b'{"query":"' + (b"a" * pad) + b'"}'
+
+
+def test_body_one_byte_under_the_limit_is_accepted(
+    baseline_config, plan_cache, mock_ollama, mock_qdrant
+) -> None:
+    limit = baseline_config.server.max_body_bytes
+    body = _body_of(limit - 1)
+    assert len(body) == limit - 1
+
+    with _client(baseline_config, plan_cache, mock_ollama, mock_qdrant, cn="agent_alice") as c:
+        response = c.post(
+            "/v1/query", content=body, headers={"Content-Type": "application/json"}
+        )
+
+    assert response.status_code == 200
+
+
+def test_body_one_byte_over_the_limit_is_refused(
+    baseline_config, plan_cache, mock_ollama, mock_qdrant
+) -> None:
+    limit = baseline_config.server.max_body_bytes
+    body = _body_of(limit + 1)
+    assert len(body) == limit + 1
+
+    with _client(baseline_config, plan_cache, mock_ollama, mock_qdrant, cn="agent_alice") as c:
+        response = c.post(
+            "/v1/query", content=body, headers={"Content-Type": "application/json"}
+        )
+
+    assert response.status_code == 413
+    assert response.json()["error"] == "request_too_large"
+
+
+def test_oversize_body_is_refused_without_parsing(
+    baseline_config, plan_cache, mock_ollama, mock_qdrant
+) -> None:
+    """An oversize body that is not valid JSON still gets 413, not 400.
+
+    Proves the limit runs before parsing: if the body reached QueryRequest
+    first, malformed JSON would answer 400 bad_request instead.
+    """
+    body = b"x" * (baseline_config.server.max_body_bytes + 1)
+
+    with _client(baseline_config, plan_cache, mock_ollama, mock_qdrant, cn="agent_alice") as c:
+        response = c.post(
+            "/v1/query", content=body, headers={"Content-Type": "application/json"}
+        )
+
+    assert response.status_code == 413
+    assert response.json()["error"] == "request_too_large"

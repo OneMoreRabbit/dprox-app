@@ -22,7 +22,7 @@ def test_healthz_returns_ok_with_all_checks(
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "ok"
-    assert body["org"] == baseline_config.org
+    assert body["orgs"] == ["testorg"]
 
     plan_check = body["checks"]["plan"]
     assert plan_check["loaded"] is True
@@ -35,8 +35,9 @@ def test_healthz_returns_ok_with_all_checks(
 
     qdrant_check = body["checks"]["qdrant"]
     assert qdrant_check["reachable"] is True
-    assert qdrant_check["collection_exists"] is True
-    assert qdrant_check["vector_dim_matches"] is True
+    assert qdrant_check["collections_exist"] is True
+    assert qdrant_check["vector_dims_match"] is True
+    assert qdrant_check["collections"]["testorg"]["collection"] == "documents"
 
 
 def test_healthz_returns_503_when_ollama_unreachable(
@@ -126,8 +127,9 @@ def test_healthz_returns_503_when_qdrant_dim_mismatches(
     assert response.status_code == 503
     body = response.json()
     assert body["status"] == "degraded"
-    assert body["checks"]["qdrant"]["vector_dim_matches"] is False
-    assert body["checks"]["qdrant"]["vector_dim"] == 384
+    assert body["checks"]["qdrant"]["vector_dims_match"] is False
+    one = body["checks"]["qdrant"]["collections"]["testorg"]
+    assert one["vector_dim"] == 384
 
 
 def test_version_endpoint_returns_version_and_image(
@@ -147,4 +149,4 @@ def test_version_endpoint_returns_version_and_image(
 
 
 def test_image_uses_ghcr_jobcpf() -> None:
-    assert IMAGE.startswith("ghcr.io/jobcpf/dprox:")
+    assert IMAGE.startswith("ghcr.io/onemorerabbit/dprox:")

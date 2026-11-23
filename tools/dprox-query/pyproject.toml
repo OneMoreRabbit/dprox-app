@@ -1,0 +1,33 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# A distribution of its own, not part of the dprox wheel. It is installed in
+# the seat image and the OpenClaw image, where the server's dependencies —
+# fastapi, uvicorn, qdrant-client, cryptography — have no business being. Its
+# own are httpx, click and pyyaml.
+#
+# Its version is dprox's: the two are released from one repo by one tag, and a
+# reader comparing a tool against a server should not have to map one number
+# onto another. What it is compatible WITH is stated separately, in
+# src/dprox_query/version.py.
+[project]
+name = "dprox-query"
+version = "0.3.0"
+description = "Search command for dprox: one question, the passages you may see"
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [{ name = "ARC Power" }]
+license = { text = "TBD" }
+
+dependencies = [
+    "httpx>=0.27,<1.0",
+    "pyyaml>=6.0,<7.0",
+    "click>=8.0,<9.0",
+]
+
+[project.scripts]
+dprox-query = "dprox_query.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dprox_query"]
