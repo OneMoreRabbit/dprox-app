@@ -1,7 +1,7 @@
 ---
 title: Release notes — dprox-app
 status: active
-updated: 2026-11-19
+updated: 2026-11-23
 owner: agent-eco.component.dprox
 about: one short entry per release, newest first — what changed and what anyone must do about it
 ---
@@ -13,7 +13,17 @@ Every built version gets a line under **Built, not yet released**; when it is
 tagged on `main` those lines become the tag's entry, with TL;DR and Action, in
 the tagging commit.
 
-## v0.3.0 — 2026-11-19 (built, not yet released)
+A version marked **built, never released** has no image and never will: it was
+tagged locally, overtaken, and publishing it would add something nobody can
+deploy. The entry stays because the changes are real and shipped in a later
+release.
+
+**There is no v0.1.2 image either**, for a different reason: its release build
+failed on 2026-09-13 pushing to a personal namespace after the repository had
+moved to OneMoreRabbit. The only image before v0.3.0 is
+`ghcr.io/jobcpf/dprox:v0.1.1`.
+
+## v0.3.0 — 2026-11-23
 
 **TL;DR:** one dprox answers every org, and there is a search command,
 `dprox-query`, for seats and OpenClaw agents. **Breaking for deployment:**
@@ -135,7 +145,13 @@ plan must carry `groups[]`.
 3. Place `dprox-query`'s configuration, certificate and key in each seat's
    persistent home. `dprox-query check` says whether all three are in place.
 
-## v0.2.0 — 2026-11-13
+## v0.2.0 — 2026-11-13 — **built, never released**
+
+**No image exists and none will.** It was tagged locally on 2026-11-13 and the
+push waited; by the time the route for releasing was settled, v0.3.0 had
+replaced it, and v0.3.0's configuration shape supersedes v0.2.0's. Publishing
+it would add an image nobody can roll (arch, hub #16996). Everything below
+shipped in v0.3.0.
 
 **TL;DR:** a real request size limit, images in the organisation namespace, and
 three dead configuration keys removed. **Breaking for deployment:** the config
