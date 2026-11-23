@@ -49,11 +49,31 @@ embedding:
   # An empty string is a real choice, meaning "this model wants no prefix":
   #   nomic-embed-text   "search_query: "   (the trailing space is part of it)
   #   bge-m3             ""
-  #   qwen3-embedding    an instruction line on the query, none on documents
+  #   qwen3-embedding    an instruction line, then "Query: " (see below)
+  #
+  # WRITE IT DOUBLE-QUOTED WITH \n, not as a YAML block scalar. Both parse
+  # correctly, but in a block scalar the trailing space after "Query:" sits at
+  # the end of a line, where it is invisible and any "strip trailing
+  # whitespace on save" setting or pre-commit hook silently deletes it. Inside
+  # quotes it is visible and safe. A prefix that loses its last character does
+  # not fail — it lowers every score, which is the fault this value exists to
+  # prevent.
+  #
+  # Check what dprox actually holds, rather than what the file looks like:
+  # `dprox health` prints it with repr(), and /healthz carries it, so the
+  # newline shows as \n and the trailing space is visible before the quote.
   #
   # Changing this changes every score, so change it with the model and the
   # re-index, never on its own.
   query_prefix: "search_query: "
+
+  # The ARC value from 2026-11-23, for qwen3-embedding:4b with vector_dim
+  # 2560 (operator's choice, measured by estate-manage; arch hub #16906):
+  #
+  #   query_prefix: "Instruct: Given a web search query, retrieve relevant\
+  #     passages that answer the query\nQuery: "
+  #
+  # Documents are never prefixed, so ingstr adds nothing.
 
 # Qdrant (read-only access). One server, one collection for each org.
 qdrant:

@@ -245,3 +245,91 @@ def test_healthz_still_answers_with_no_body_at_all(
     with _client(baseline_config, plan_cache, mock_ollama, mock_qdrant) as c:
         assert c.get("/healthz").status_code == 200
         assert c.get("/version").status_code == 200
+
+
+# --- the prefix survives the round trip the estate will actually do ----------
+
+
+ARC_PREFIX = (
+    "Instruct: Given a web search query, retrieve relevant passages that "
+    "answer the query\nQuery: "
+)
+"""The value chosen for ARC on 2026-11-23 (operator, via arch hub #16906):
+an instruction line, a newline, then `Query: ` with a trailing space."""
+
+
+@pytest.mark.parametrize(
+    ("form", "yaml_text"),
+    [
+        (
+            "double-quoted with \\n",
+            'embedding:\n'
+            '  query_prefix: "Instruct: Given a web search query, retrieve '
+            'relevant passages that answer the query\\nQuery: "\n',
+        ),
+        (
+            "literal block",
+            "embedding:\n"
+            "  query_prefix: |-\n"
+            "    Instruct: Given a web search query, retrieve relevant "
+            "passages that answer the query\n"
+            "    Query: \n",
+        ),
+    ],
+)
+def test_the_arc_prefix_survives_yaml(form: str, yaml_text: str) -> None:
+    """Both forms parse to the same string, trailing space and all.
+
+    Worth a test because the value is two lines ending in a space, and a
+    prefix that loses its last character does not fail — it lowers every
+    score. The example config recommends the quoted form anyway: in a block
+    scalar that space is at the end of a line, where stripping trailing
+    whitespace on save deletes it silently.
+    """
+    import yaml
+
+    assert yaml.safe_load(yaml_text)["embedding"]["query_prefix"] == ARC_PREFIX
+
+
+def test_the_prefix_is_not_stripped_by_the_config_model(
+    baseline_config_dict: dict,
+) -> None:
+    """`_Strict` strips whitespace on every other string; not this one."""
+    baseline_config_dict["embedding"]["query_prefix"] = ARC_PREFIX
+    baseline_config_dict["embedding"]["model"] = "qwen3-embedding:4b"
+    baseline_config_dict["embedding"]["vector_dim"] = 2560
+
+    config = Config.model_validate(baseline_config_dict)
+
+    assert config.embedding.query_prefix == ARC_PREFIX
+    assert config.embedding.query_prefix.endswith("Query: "), "the space is kept"
+    assert config.embedding.vector_dim == 2560
+
+
+async def test_what_dprox_sends_to_ollama_with_the_arc_prefix(
+    baseline_config_dict: dict,
+) -> None:
+    """End to end on the one thing that matters: the body of the embed call."""
+    import httpx
+
+    from dprox.ollama import OllamaClient
+
+    baseline_config_dict["embedding"]["query_prefix"] = ARC_PREFIX
+    baseline_config_dict["embedding"]["vector_dim"] = 4
+    config = Config.model_validate(baseline_config_dict)
+
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        import json
+
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(200, json={"embedding": [0.1] * 4})
+
+    async with OllamaClient(
+        config.embedding, transport=httpx.MockTransport(handler)
+    ) as client:
+        await client.embed("what is the wage policy")
+
+    assert seen["body"]["prompt"] == ARC_PREFIX + "what is the wage policy"
+    assert "\nQuery: what is the wage policy" in seen["body"]["prompt"]
