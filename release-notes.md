@@ -1,7 +1,7 @@
 ---
 title: Release notes — dprox-app
 status: active
-updated: 2026-11-23
+updated: 2026-11-27
 owner: agent-eco.component.dprox
 about: one short entry per release, newest first — what changed and what anyone must do about it
 ---
@@ -23,7 +23,17 @@ failed on 2026-09-13 pushing to a personal namespace after the repository had
 moved to OneMoreRabbit. The only image before v0.3.0 is
 `ghcr.io/jobcpf/dprox:v0.1.1`.
 
-## v0.3.0 — 2026-11-23
+**Two entries have no tag in this repository.** `v0.1.0` and `v0.1.1` were
+tagged in the pre-move repository and the tags did not come across, so
+`git tag` here lists only `v0.1.2` and `v0.3.0`. The entries stay because the
+releases were real and `v0.1.1` is the image that ran until 2026-11-23.
+
+**An Action line in an old entry is what was true when it was written.** Where
+one has since become wrong — all three of the `0.1.x` entries said to pin
+`v0.1.1` — the line now says so with the date, rather than being rewritten:
+history is not edited, it is annotated.
+
+## v0.3.0 — 2026-11-23 — released, `ghcr.io/onemorerabbit/dprox:v0.3.0`
 
 **TL;DR:** one dprox answers every org, and there is a search command,
 `dprox-query`, for seats and OpenClaw agents. **Breaking for deployment:**
@@ -175,7 +185,9 @@ must be edited before the image is rolled.
   what `v0.1.2` failed to do, which is why that tag has no image.
 - Atlas wiring refreshed through method 1.35.0.
 
-**Action — edit the config before rolling the image; they are two acts.**
+**Action: none. This release has no image.** The diff below is kept because it
+is the record of what changed; the action to take is v0.3.0's, which carries
+these changes and more.
 
 ```diff
  server:
@@ -209,7 +221,8 @@ pin it.**
   namespace is now derived from `github.repository_owner` (constitution §11).
 - Content is the version bump and an Atlas script refresh. No behaviour change.
 
-**Action:** none, and **do not re-pin.** `v0.1.1` remains the consumable image.
+**Action:** none, and **do not re-pin.** `v0.1.1` was the consumable image when
+this was written; **since 2026-11-23 it is `v0.3.0`.**
 
 ## v0.1.1 — 2026-05-12
 
@@ -223,7 +236,8 @@ pin it.**
 - Written up in the Atlas vault as
   `components/dprox/docs/provides/dprox-qdrant-client-bug-response-v0_1.md`.
 
-**Action:** re-pin to `v0.1.1`. This is the image currently deployed.
+**Action:** re-pin to `v0.1.1`. That was the current image when this was
+written; **since 2026-11-23 it is `v0.3.0`.**
 
 ## v0.1.0 — 2026-05-12
 
@@ -234,4 +248,5 @@ pin it.**
 - Real-platform smoke on otter surfaced the qdrant-client API drift fixed in
   `v0.1.1`.
 
-**Action:** superseded — pin `v0.1.1` instead.
+**Action:** superseded — pin `v0.3.0`. (This entry said `v0.1.1`, which was
+right until 2026-11-23.)

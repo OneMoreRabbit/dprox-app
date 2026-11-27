@@ -2,60 +2,92 @@
 
 RBAC-enforcing query proxy. Read-path service for ARC Power's RAG system.
 
-> One dprox instance per org. Stateless, long-running, mTLS-fronted query
-> proxy in front of a per-org Qdrant collection.
+> **One dprox answers every org.** Stateless, long-running, mTLS-fronted query
+> proxy in front of one Qdrant server holding a collection for each org.
 
-The canonical reference is **[../integrations/dprox-design-spec-v0.2.md](../integrations/dprox-design-spec-v0.2.md)**.
-Runtime cert contract lives in **[../integrations/dprox-cert-integration-v0.2.md](../integrations/dprox-cert-integration-v0.2.md)**;
-issuance/lifecycle in **[../integrations/cert-provisioning-brief.md](../integrations/cert-provisioning-brief.md)**.
-Earlier inputs and superseded specs are under `../integrations/archive/`.
+The architecture lives in the project's Atlas vault, not here (constitution §3).
+The canonical references, by name:
+
+| For | Read |
+|---|---|
+| What dprox is and how it decides | `dprox-design-spec-v0_3` |
+| How it is deployed | `dprox-platform-brief-v0_2` |
+| What the estate must place | `dprox-estate-requirements-v0_1` |
+| Where agents are told to find it | `dprox-endpoints-file-v0_3` |
+| The index it reads | `qdrant-collection-contract` 0.4 (ingstr's) |
+| Who may see what | `compiled-rbac-plan` 0.12 (rbac-compile's) |
 
 ## Status
 
-**v0.1.1 is deployed on the platform** (`ghcr.io/jobcpf/dprox:v0.1.1`, GHCR
-public). All twelve build steps are complete; end-to-end `/v1/query`
-against the real arc Qdrant + Ollama is passing on otter.
+**v0.3.0 is the current release** — `ghcr.io/onemorerabbit/dprox:v0.3.0`,
+digest `sha256:e1b0f91de2b7e2299e40f40484f12e80c48a312002536428b91aad38bc17dcb4`,
+tagged on `main` `831d4bd` (2026-11-23). What is deployed where is the estate's
+to state, not this file's: ask estate-manage, or read `component.md` in the
+vault, which carries a dated line.
 
-> **Image namespace moved.** Estate ruling 2026-09-13: published images use the
-> organisation namespace `ghcr.io/onemorerabbit/`, never a personal account.
-> `v0.1.1` above is stated as deployed — it really is at `ghcr.io/jobcpf/` and
-> that is still the pullable image. `v0.1.2` is **source-only**: its build
-> predates this change and failed to push, so no image exists for that tag.
-> `v0.2.0` is the first release to publish to `ghcr.io/onemorerabbit/dprox`.
-> Consumers re-point only after a tag there is confirmed pullable **by pulling
-> it**.
+Two checks, independent, and the reason the service is safe to share across
+orgs: the caller's orgs come from the plan's `groups[]` and choose which
+collections are opened; inside each collection the filter carries only that
+org's groups. If one is wrong the other still holds.
 
-## Upgrading to 0.2.0 — BREAKING config change
+> **Image namespace.** Estate ruling 2026-09-13: published images use the
+> organisation namespace `ghcr.io/onemorerabbit/`, never a personal account,
+> and the release workflow derives it from `github.repository_owner` rather
+> than naming it (constitution §11).
+>
+> **Only two images have ever existed.** `ghcr.io/jobcpf/dprox:v0.1.1`, from
+> before the move, and `ghcr.io/onemorerabbit/dprox:v0.3.0`. There is **no
+> v0.1.2 image** — its build failed pushing to the old namespace after the
+> repository had moved — and **no v0.2.0 image**: v0.2.0 was tagged locally,
+> overtaken by v0.3.0, and never released. `release-notes.md` records both.
 
-**Three settings were removed. A config that still sets any of them will not
-start.** Config parsing is strict (`extra="forbid"`), so the keys must be
-deleted from the deployed config **before** the image is rolled to 0.2.0, or
-dprox fails at boot:
+## Upgrading to 0.3.0 — BREAKING config change
 
-> **Edit first, roll second — they are two acts, not one.** Config is
-> templated by one playbook and the image pinned in another, so they cannot be
-> one act. The order matters because it is asymmetric: deleting the keys is
-> harmless on 0.1.x (nothing read them), while rolling the image first is a
-> boot failure. (estate-manage, `dprox-config-migration-response-v0_1`.)
+**Edit the config first, roll the image second. They are two acts, not one,**
+and there is no order in which both the old and the new config are briefly
+fine: a 0.1.x config fails at startup against 0.3.0 and a 0.3.0 config fails
+against 0.1.x. Expect dprox down between the two. (Config is templated by one
+playbook and the image pinned in another, so they cannot be one act —
+estate-manage, `dprox-config-migration-response-v0_1`.)
 
-| Removed key | Was |
-|---|---|
-| `server.request_timeout_seconds` | parsed, never applied — no request envelope existed |
-| `server.max_request_body_bytes` | parsed, never enforced — **no body-size limit existed** |
-| `mtls.cn_to_agent_strategy` | parsed, never read; only one value was ever legal |
+**Roll rbac-compiler v0.7.3 or later first.** 0.3.0 refuses a plan with no
+`groups[]` section and names the contract version it needs.
 
-**One key is added, and it is required:** `server.max_body_bytes` (65536).
-dprox refuses to start without it. It is a *new* name on purpose — the old
-`max_request_body_bytes` was never enforced, so reusing it would have changed
-that line's behaviour with no diff to notice. A leftover old key stops the
-start and names itself.
+Parsing is strict (`extra="forbid"`), so every removed key below **stops the
+start and names itself** rather than being ignored.
 
-All three were declared, validated and read by nothing. They are deleted rather
-than implemented because their values were never chosen by anyone — implementing
-`65536` would have turned an example comment into a real limit on the trust
-boundary (constitution §11).
+### Keys that must go
 
-**The failure is loud and names the key**, e.g.:
+| Removed in | Key | Was |
+|---|---|---|
+| 0.2.0 | `server.request_timeout_seconds` | parsed, never applied — no request envelope existed |
+| 0.2.0 | `server.max_request_body_bytes` | parsed, never enforced — **no body-size limit existed** |
+| 0.2.0 | `mtls.cn_to_agent_strategy` | parsed, never read; only one value was ever legal |
+| 0.3.0 | `org` (top level) | one dprox has no single org |
+| 0.3.0 | `qdrant.collection` | replaced by `qdrant.collections` |
+
+All three 0.2.0 removals were declared, validated and read by nothing. They
+were deleted rather than implemented because nobody had chosen their values —
+implementing `65536` would have turned an example comment into a real limit on
+the trust boundary (constitution §11).
+
+### Keys that must appear
+
+| Added in | Key | Note |
+|---|---|---|
+| 0.2.0 | `server.max_body_bytes` | required, no default. A real limit, enforced **while the body is read** and refused with HTTP 413 `request_too_large`. A new name on purpose: reusing `max_request_body_bytes` would have changed that line's behaviour with no diff to notice |
+| 0.3.0 | `qdrant.collections` | a collection for each org, at least one. Two orgs may not share one |
+| 0.3.0 | `embedding.query_prefix` | required, no default, `""` an explicit choice. **Write it double-quoted**, not as a YAML block scalar — see the note beside the key in `examples/config.example.yml` |
+
+### One combination is refused
+
+`plan.cache_enabled: true` with `plan.reload_on_mtime_change: false`. Together
+they mean the plan in memory is whatever was there at startup, so removing a
+caller's group would not take effect until restart — and that is the one
+revocation the design promises is immediate. A setting that makes a documented
+guarantee silently false is a phantom control, so dprox does not start.
+
+### What the failure looks like
 
 ```
 config validation failed for /etc/dprox/config.yml:
@@ -63,33 +95,32 @@ server.max_request_body_bytes
   Extra inputs are not permitted [type=extra_forbidden, ...]
 ```
 
-Delete the named key and restart. Nothing else changes: no behaviour depended on
-these settings, because nothing read them.
+Delete the named key and restart. `examples/config.example.yml` is the whole
+file in its current shape; `dprox-estate-requirements-v0_1` in the vault is the
+estate's list with a check for each item.
 
-> **`max_request_body_bytes` removed a cap that never existed** — dprox did not
-> bound request body size on `0.1.x`, despite that key. `0.2.0` adds a real one
-> as `server.max_body_bytes`, enforced before parsing and refused with
-> HTTP 413 `request_too_large`.
+## What the service does
 
-| Step | Coverage |
+| Part | What it does |
 |---|---|
-| 1. Skeleton | `dprox` CLI (`serve`, `health`, `version`), FastAPI app, `/healthz`, `/version` |
-| 2. Config | Pydantic v2 schema (`extra="forbid"`), `--config`/`DPROX_CONFIG`, exit 3 on bad config |
-| 3. Plan | `compiled_plan.yml` parser + `PlanCache` (mtime + unknown-CN reload, rate-limited, fail-closed) |
-| 4. mTLS | uvicorn `CERT_OPTIONAL`, custom protocol, `require_mtls` dependency (EKU + single-CN), public `/healthz`/`/version` |
-| 5. Ollama | `OllamaClient.embed` + `check_health`, error taxonomy (`OllamaTimeout` → 504, `OllamaUnavailable` → 502 incl. dim mismatch) |
-| 6. Qdrant | RBAC-filtered search via `query_points` + collection health, error taxonomy (`QdrantTimeout` → 504, `QdrantUnavailable` → 502); filter-construction path 100% tested |
-| 7. `/v1/query` | Full pipeline auth → plan → embed → search → respond, spec §4.2 response shape, validation order |
-| 10. Audit logging | `event:"query"`, `event:"query_failed"`, `event:"auth_rejected"` via structlog; `query_text` only at DEBUG |
-| 11. CI + GHCR | `Dockerfile` (slim runtime, drops to UID 10042); `test.yml` (Py 3.12 + 3.13 matrix); `release.yml` builds + pushes on tag |
-| 12. Real-platform smoke | ✓ deployed on otter for `org=arc` (2026-05-13); `agent_arc_exec` end-to-end query succeeded |
+| `cli.py` | `dprox serve`, `dprox health`, `dprox version` |
+| `config.py` | the schema, `extra="forbid"` everywhere, exit 3 on a bad config |
+| `plan.py` | `compiled_plan.yml` parsing, and the cache that re-reads it when the file changes. Splits a caller's groups by org, refusing a plan it cannot resolve |
+| `mtls.py` | the listener takes a client certificate or none; the routes enforce. `/healthz` and `/version` are open, `/v1/query` is not |
+| `ollama.py` | embedding, with `query_prefix` applied here and nowhere else |
+| `qdrant.py` | the two checks and the search. `build_classification_filter` is the security boundary and is tested to 100% |
+| `bodylimit.py` | refuses an oversize body **while reading it**, before the route and before any identity exists |
+| `server.py` | the app, the endpoints, the error taxonomy and the audit events |
+| `audit.py` | one JSON event per query: `orgs_applied`, `collections_searched`, `result_count`, `dropped_count`, `query_hash` and the latencies. The query text only when `logging.log_query_text` is on |
+| `tools/dprox-query/` | the search command, **its own distribution** — the seat and OpenClaw images install it without the server's dependencies |
 
 ### Release history
 
 See [`release-notes.md`](release-notes.md) — the one home for release history,
-including versions built but not yet released. Note `v0.1.2` is tagged but
-**source-only**: no image was published for it, and `v0.1.1` remains the
-consumable image.
+including versions built but not released. Two entries describe versions with
+no image: `v0.1.2` (its build failed on the namespace) and `v0.2.0` (tagged
+locally, overtaken by v0.3.0, never released). Both say so in their own entry,
+so neither can be mistaken for something pullable.
 
 ## Quick start (venv, Windows PowerShell)
 
@@ -177,52 +208,86 @@ for a localhost-targeted variant.
 ```
 src/dprox/
   cli.py          CLI entry point — serve / health / version
-  server.py       FastAPI app factory (create_app(config))
-  config.py       Pydantic schema + loader + ConfigError
-  version.py      Version + image identity (single source of truth)
-tests/            Test suite (pytest, with shared fixtures in conftest.py)
-examples/         Sample config files (filled out as features land)
+  server.py       FastAPI app factory (create_app(config, plan_cache, ...))
+  config.py       schema + loader + ConfigError
+  plan.py         compiled_plan.yml parsing, PlanCache, groups split by org
+  mtls.py         peer-certificate validation and the require_mtls dependency
+  ollama.py       embedding; query_prefix is applied here
+  qdrant.py       the two checks, the search, the collection health
+  bodylimit.py    pure-ASGI body limit, enforced while reading
+  audit.py        the audit logger and its reason vocabulary
+  version.py      version + image identity (single source of truth)
+tools/dprox-query/
+  src/dprox_query/  the search command — its own distribution and own wheel
+  tests/            its tests, run by the same `pytest`
+tests/              the server's tests, shared fixtures in conftest.py
+examples/           config.example.yml (production shape), config.dev.yml,
+                    compiled_plan.example.yml
 ```
 
 ## Versioning + release
 
 `__version__` lives in [`src/dprox/version.py`](src/dprox/version.py).
-[`pyproject.toml`](pyproject.toml) carries the same string. Production
-deployments pin explicitly — never use `:latest`.
+[`pyproject.toml`](pyproject.toml) and
+[`tools/dprox-query/pyproject.toml`](tools/dprox-query/pyproject.toml) carry
+the same string: the tool is released from this repo by the same tag, and a
+reader comparing a tool against a server should not have to map one number onto
+another. The release job gates on all three. Production deployments pin
+explicitly — never `:latest`.
 
-To cut a release:
+**The flow, as used for v0.3.0 on 2026-11-23.** A component merges its own
+code repo and its own release PR (operator, 2026-11-11), and the seat does the
+pushing — the operator does not run pushes in seats (operator, via arch
+2026-11-23).
 
 ```bash
-# 1. On dev: bump version in BOTH files (no automation — discipline).
-#    Match exactly; release CI gates on it. Drop any -dev suffix.
-$EDITOR src/dprox/version.py pyproject.toml
-git commit -am "release: X.Y.Z" && git push     # let CI go green first
+# 1. On dev: bump the version in all three files. No automation — discipline.
+$EDITOR src/dprox/version.py pyproject.toml tools/dprox-query/pyproject.toml
+git commit -am "release: X.Y.Z" && git push origin dev   # let CI go green
 
-# 2. Merge to main, tag, and push them together.
-git checkout main && git pull
-git merge --no-ff dev -m "Release: merge dev -> main"
-git tag -a vX.Y.Z -m "Release vX.Y.Z"
-git push origin main --follow-tags
+# 2. A release branch and a PR into main. Merge it yourself once checks pass.
+git push origin dev:refs/heads/release/vX.Y.Z
+gh pr create --base main --head release/vX.Y.Z --title "Release vX.Y.Z ..."
+gh pr checks <n>            # all green first
+gh pr merge <n> --merge --subject "Release: merge dev -> main for vX.Y.Z"
+
+# 3. Tag the merge commit. ANNOTATED (constitution §12), which `gh release
+#    create` does not make — so the tag object and the ref go through the API.
+gh api --method POST /repos/<owner>/<repo>/git/tags \
+       -f tag=vX.Y.Z -f message="Release vX.Y.Z ..." \
+       -f object=<merge commit sha> -f type=commit
+gh api --method POST /repos/<owner>/<repo>/git/refs \
+       -f ref=refs/tags/vX.Y.Z -f sha=<tag object sha>
+
+# 4. Watch the build, then READ THE DIGEST BACK FROM GHCR, not from the log.
+gh run watch <run id> --exit-status
+gh api /orgs/<org>/packages/container/dprox/versions \
+       --jq '.[] | {tags: .metadata.container.tags, digest: .name}'
 ```
 
-`--no-ff` so the release is a commit you can point at; `--follow-tags` so
-there is never a window where `main` has moved and the tag has not.
-Release tags are `vMAJOR.MINOR.PATCH` (constitution §12) — no bare `X.Y.Z`.
+Branch from `dev` rather than from a locally prepared `main`, so `main`'s
+history is one merge of `dev` and no local release commits survive. Release
+tags are `vMAJOR.MINOR.PATCH` (constitution §12) — never a bare `X.Y.Z`.
 
-> `REVISIT(branch-protection-pass)` — **the flow above only.**
-> This flow is per the current runbook and changes with the branch-protection
-> pass, which moves releases to a PR `dev → main`, then tags the merge commit
-> and pushes the tag separately. Re-issue the `bash` block and this note in
-> that pass.
->
-> **Not in scope for that re-issue:** the tag *spelling* (constitution §12)
-> and the namespace *derivation* (§11) are rulings the pass does not touch.
+> **Why not `git push origin main --follow-tags`.** It was the flow until
+> v0.3.0 and it is refused in a seat session, correctly: one command publishes
+> an image and moves the branch the estate installs from. The PR route does
+> the same work with a reviewable step in the middle, and it is what the other
+> components use. The earlier `REVISIT(branch-protection-pass)` note asked for
+> exactly this change; it has happened, so the note is gone.
 
-The `release.yml` workflow runs the test gate, verifies the tag matches
-`dprox.__version__`, builds the image with Buildx, and pushes both
-`ghcr.io/<org>/dprox:vX.Y.Z` and `ghcr.io/<org>/dprox:X.Y.Z`. The namespace
-is derived from `github.repository_owner` (lowercased), not hardcoded —
-estate artefacts publish under the organisation (constitution §11).
+The `release.yml` workflow runs the test gate, verifies the tag matches both
+`dprox.__version__` and `dprox_query.__version__`, builds the image with
+Buildx, and pushes both `ghcr.io/<org>/dprox:vX.Y.Z` and
+`ghcr.io/<org>/dprox:X.Y.Z`. The namespace is derived from
+`github.repository_owner`, lowercased, not hardcoded (constitution §11).
+
+> **The `dprox-query` wheel is not yet attached to a release.** The change that
+> builds it and attaches it sits on branch `atlas/dprox/release-wheel`: this
+> seat's GitHub App has no `workflows` permission, so it cannot push a change
+> to `.github/workflows/`. Until someone pushes that branch or grants the
+> permission, a tag publishes the image only, and agent-skeleton and
+> agent-image have nothing to fetch.
 
 ## Cert mount permissions (production note)
 
